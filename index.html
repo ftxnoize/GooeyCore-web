@@ -297,6 +297,7 @@ button.btn.danger-btn:hover { background: var(--danger); color: #fff; }
 .dbg-src-bp { width: 14px; flex-shrink: 0; text-align: center; cursor: pointer;
               color: var(--border-hi); font-size: 13px; line-height: 1.5; }
 .dbg-src-bp:hover { color: var(--danger); }
+.dbg-src-bp.set { color: var(--danger); }
 .dbg-src-pc { width: 44px; flex-shrink: 0; text-align: right; padding-right: 8px;
               font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
 .dbg-src-text { font-family: var(--mono); font-size: 11px; color: var(--text);
@@ -398,6 +399,8 @@ button.btn.danger-btn:hover { background: var(--danger); color: #fff; }
   <!-- ===== TOOLBAR ===== -->
   <div id="toolbar">
     <span class="tb-label" style="color:var(--accent);font-weight:700;font-family:var(--mono);letter-spacing:.08em;font-size:13px">GOOEYCORE STUDIO</span>
+    <!-- Build number: increase by one with every update to the main branch. -->
+    <span class="tb-label" id="build-label" style="color:var(--text-dim);font-family:var(--mono);font-size:11px">Build 10</span>
     <div class="tb-sep"></div>
 
     <button class="tb" onclick="cmd('new')"    title="New design">&#9633; New</button>
@@ -458,7 +461,7 @@ button.btn.danger-btn:hover { background: var(--danger); color: #fff; }
             <button class="dbg-header-btn" id="dbg-btn-pause"    onclick="dbgPause()"    title="Pause execution">&#9646;&#9646; Pause</button>
             <button class="dbg-header-btn active" id="dbg-btn-continue" onclick="dbgContinue()" title="Continue">&#9654; Run</button>
             <button class="dbg-header-btn" id="dbg-btn-step"     onclick="dbgStep()"     title="Single step one instruction">Step</button>
-            <button class="dbg-header-btn danger" onclick="dbgClearBreak()" title="Clear breakpoint">&#8864; Brk</button>
+            <button class="dbg-header-btn danger" onclick="dbgClearAllBreaks()" title="Clear all breakpoints (click a line's dot to set one)">&#8864; Clear Brk</button>
             <button class="dbg-header-btn" onclick="dbgCloseSource()" title="Close">&#10005;</button>
           </div>
         </div>
@@ -1268,7 +1271,8 @@ function dbgBuildSourcePanel() {
     bp.className = 'dbg-src-bp';
     const pc = fxoLineToPc.get(i);
     if (pc !== undefined) {
-      bp.textContent = '·';
+      dbgShowLineBreak(bp, simDbgHasLineBreak(pc));
+      bp.title = 'Break before this line';
       bp.onclick = () => dbgBreakAtLine(i, pc);
       dbgPcLineMap.set(pc, i);
     }
@@ -1302,7 +1306,7 @@ function dbgHighlightPc(pc) {
   if (lineIdx < rows.length) {
     const row = rows[lineIdx];
     row.classList.add('dbg-current');
-    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    dbgScrollRowIntoView(body, row);
   }
   const disp = document.getElementById('dbg-pc-display');
   if (disp) disp.textContent = 'PC ' + String(pc).padStart(4, '0');
@@ -1315,12 +1319,35 @@ function dbgCloseRegs() {
   document.getElementById('dbg-reg-panel').classList.add('hidden');
 }
 
-// Set breakpoint from clicking a source line dot.
+// Scroll the source listing, and only the listing, so the row is in view.
+// scrollIntoView would also scroll #canvas-wrap, which has no scrollbar to
+// bring it back.
+function dbgScrollRowIntoView(body, row) {
+  const top = row.offsetTop - body.offsetTop;
+  const bottom = top + row.offsetHeight;
+  if (top < body.scrollTop) body.scrollTop = top;
+  else if (bottom > body.scrollTop + body.clientHeight) body.scrollTop = bottom - body.clientHeight;
+}
+
+function dbgShowLineBreak(dot, on) {
+  dot.textContent = on ? '●' : '·';
+  dot.classList.toggle('set', on);
+}
+
+// Toggle a breakpoint from clicking a source line dot. The simulator stops
+// with that line next to run, every sample it reaches it.
 function dbgBreakAtLine(lineIdx, pc) {
-  // For a line-click breakpoint, we highlight the intent in the UI
-  // but the actual breakpoint uses the register condition row.
-  // Just scroll to confirm and focus the break row.
-  document.getElementById('dbg-break-row').scrollIntoView({ behavior: 'smooth' });
+  const on = simDbgToggleLineBreak(pc);
+  const row = document.getElementById('dbg-source-body').children[lineIdx];
+  if (row) dbgShowLineBreak(row.querySelector('.dbg-src-bp'), on);
+}
+
+// The header's Clear Brk button: line breakpoints and the register one.
+function dbgClearAllBreaks() {
+  simDbgClearBreaks();
+  document.querySelectorAll('#dbg-source-body .dbg-src-bp')
+    .forEach(dot => { if (dot.textContent) dbgShowLineBreak(dot, false); });
+  dbgClearBreak();
 }
 
 // ---- Register panel ----
@@ -1599,6 +1626,13 @@ document.addEventListener('DOMContentLoaded', function() {
   const rp = document.getElementById('dbg-reg-panel');
   if (sp) dbgMakeDraggable(sp, document.getElementById('dbg-source-header'));
   if (rp) dbgMakeDraggable(rp, document.getElementById('dbg-reg-header'));
+
+  // #canvas-wrap clips rather than scrolls, so anything that scrolls it
+  // (focus, scrollIntoView) would hide its top with no way back. Undo it.
+  const wrap = document.getElementById('canvas-wrap');
+  if (wrap) wrap.addEventListener('scroll', () => {
+    if (wrap.scrollTop || wrap.scrollLeft) { wrap.scrollTop = 0; wrap.scrollLeft = 0; }
+  });
 
   console.log('GooeyCore Studio ready.');
 });

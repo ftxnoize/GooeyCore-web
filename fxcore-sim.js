@@ -260,6 +260,12 @@ function simBuildWorkletSource() {
         '                hit = bp.when === "always" || (bp.when === "first" && c.sampleCount === 0) ||',
         '                      (bp.when === "sample" && c.sampleCount === bp.sample);',
         '                break;',
+        // Stop before the instruction at bp.pc runs, every sample: just after
+        // whatever leads to it, or for the first instruction, at the end of
+        // the pass before.
+        '            case "at":',
+        '                hit = bp.pc === 0 ? next >= c.progLen : next === bp.pc;',
+        '                break;',
         '            case "clip":',
         '                hit = c.clipped && (bp.pc < 0 || cur === bp.pc);',
         '                break;',
@@ -1449,6 +1455,8 @@ let simDbgPc = -1;            // next instruction; progLen or more is the end of
 let simDbgStepped = false;    // has this thread's copy moved past the worklet's
 let simDbgInputs = [0, 0, 0, 0];  // input held while stepping, as floats
 let simDbgBreak = null;       // the one register breakpoint, in the worklet's shape
+let simDbgLineBreaks = new Set();  // addresses to stop before
+let simDbgLineImage = null;   // the build those addresses belong to
 
 // Set to functions in index.html.
 let simDbgOnState = null;      // ({state, pc, creg, mreg, acc64hi, acc64lo})
@@ -1525,6 +1533,26 @@ function simDbgSetBreak(cond) {
     simDebugPushBreakpoints();
 }
 
+// Set or clear a breakpoint before the instruction at pc. It stops every
+// sample, with that instruction next to run. Returns whether one is now set.
+function simDbgToggleLineBreak(pc) {
+    simDbgLineImage = simImage;
+    if (simDbgLineBreaks.has(pc)) simDbgLineBreaks.delete(pc);
+    else simDbgLineBreaks.add(pc);
+    simDebugPushBreakpoints();
+    return simDbgLineBreaks.has(pc);
+}
+
+function simDbgHasLineBreak(pc) {
+    return simDbgLineBreaks.has(pc);
+}
+
+// Clear every breakpoint, line and register.
+function simDbgClearBreaks() {
+    simDbgLineBreaks.clear();
+    simDbgSetBreak(null);
+}
+
 // Convert a decimal S.31 value (-1.0 to ~+1.0) to the raw integer the worklet uses.
 function simDbgS31(v) {
     const clamped = Math.max(-1.0, Math.min(0.9999999995, v));
@@ -1558,9 +1586,10 @@ function simDebugOnHalted(msg) {
     simDbgPc = msg.pc;
     simDbgStepped = false;
     simDbgInputs = Array.from(c.inputs, v => v / 2147483648);
-    // A pause lands at the end of a pass; open the next one so the panel
-    // shows the first instruction ready to run, as it always has.
-    if (msg.reason && msg.reason.kind === 'halt') {
+    // A pause, or a breakpoint on the first instruction, lands at the end of
+    // a pass; open the next one so the panel shows the first instruction
+    // ready to run.
+    if (msg.pc >= c.progLen) {
         simDbgStep();
         return;
     }
@@ -1586,10 +1615,16 @@ function simDebugOnStop() {
 // The engine was rebuilt or a new build loaded: the worklet needs the
 // breakpoint again.
 function simDebugPushBreakpoints() {
-    simPost({type: 'breakpoints', list: simDbgBreak ? [simDbgBreak] : []});
+    const list = Array.from(simDbgLineBreaks, pc => ({kind: 'at', pc: pc}));
+    if (simDbgBreak) list.push(simDbgBreak);
+    simPost({type: 'breakpoints', list: list});
 }
 
+// Play loads the same build again; a new build moves the addresses, so line
+// breakpoints from an older one are dropped.
 function simDebugOnLoad() {
+    if (simImage !== simDbgLineImage) simDbgLineBreaks.clear();
+    simDbgLineImage = simImage;
     simDebugPushBreakpoints();
 }
 
