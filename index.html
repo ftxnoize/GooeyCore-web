@@ -1,0 +1,1608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GooeyCore Studio — FXCore DSP Designer</title>
+<style>
+/* ============================================================
+   GooeyCore Studio — design tokens match gooeycore.html
+   with sim panel additions matching the assembler site style.
+   ============================================================ */
+:root {
+  --bg-app:      #111418;
+  --bg-panel:    #181c22;
+  --bg-raised:   #1e232b;
+  --bg-canvas:   #13171d;
+  --border:      #2a3040;
+  --border-hi:   #3a4458;
+  --accent:      #00c8a0;
+  --accent-dim:  #007f67;
+  --text:        #d4dce8;
+  --text-dim:    #7a8899;
+  --text-hi:     #eaf0f8;
+  --danger:      #e05555;
+  --warn:        #e09040;
+  --mono:        'JetBrains Mono','Fira Code','Cascadia Code',monospace;
+  --sans:        'Inter',system-ui,sans-serif;
+  --radius:      4px;
+  --toolbar-h:   40px;
+  --status-h:    26px;
+  --sidebar-w:   220px;
+  --sim-w:       280px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: var(--bg-app); color: var(--text); font-family: var(--sans); font-size: 13px; }
+
+/* ---- Layout ---- */
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+#toolbar {
+  display: flex; align-items: center; gap: 2px;
+  height: var(--toolbar-h); padding: 0 8px;
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  flex-shrink: 0; user-select: none; flex-wrap: nowrap; overflow: hidden;
+}
+
+#main-area { display: flex; flex: 1; overflow: hidden; }
+
+/* Left library sidebar */
+#sidebar {
+  width: var(--sidebar-w); flex-shrink: 0;
+  background: var(--bg-panel); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* GooeyCore canvas in the centre */
+#canvas-wrap { flex: 1; position: relative; overflow: hidden; }
+canvas#main-canvas { display: block; cursor: crosshair; }
+
+/* Simulator panel on the right */
+#sim-panel {
+  width: var(--sim-w); flex-shrink: 0;
+  background: var(--bg-panel); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow-y: auto;
+}
+#sim-panel-header {
+  padding: 8px 10px; font-size: 11px; font-weight: 700;
+  letter-spacing: .05em; color: var(--accent); text-transform: uppercase;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+
+.sim-section { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.sim-section h4 { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin-bottom: 6px; }
+
+.sim-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; font-size: 12px; }
+.sim-row label { color: var(--text-dim); flex-shrink: 0; margin-right: 6px; }
+.sim-row select { background: var(--bg-raised); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); padding: 2px 4px; font-size: 11px; flex: 1; }
+
+.sim-slider-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; }
+.sim-slider-row label { color: var(--text-dim); width: 40px; flex-shrink: 0; }
+.sim-slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+.sim-slider-row .sim-value { width: 52px; text-align: right; font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+
+.sim-transport { display: flex; gap: 6px; margin-bottom: 6px; }
+.sim-play-btn { flex: 1; padding: 5px; background: var(--accent-dim); border: none; border-radius: var(--radius); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sim-play-btn:hover { background: var(--accent); }
+.sim-panic-btn { padding: 5px 10px; background: var(--bg-raised); border: 1px solid var(--border-hi); border-radius: var(--radius); color: var(--text); font-size: 12px; cursor: pointer; }
+.sim-panic-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+.sim-status { font-size: 11px; color: var(--text-dim); font-family: var(--mono); margin-bottom: 4px; }
+.sim-program-state { font-size: 11px; font-family: var(--mono); }
+.sim-program-state.loaded { color: var(--accent); }
+.sim-program-state.error  { color: var(--danger); }
+
+.sim-meters { display: flex; flex-direction: column; gap: 3px; margin-bottom: 4px; }
+.sim-meter-row { display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: var(--mono); }
+.sim-meter-row span { width: 34px; color: var(--text-dim); }
+.sim-meter { flex: 1; height: 6px; background: var(--bg-raised); border-radius: 3px; overflow: hidden; }
+.sim-meter-bar { height: 100%; width: 0%; background: var(--accent); transition: width .08s; }
+
+.sim-switch-list { display: flex; flex-direction: column; gap: 4px; }
+.sim-switch-row { display: flex; align-items: center; gap: 4px; }
+.sim-sw-name { width: 48px; font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.sim-sw-toggle,.sim-sw-push { padding: 2px 6px; border-radius: var(--radius); border: 1px solid var(--border-hi); background: var(--bg-raised); color: var(--text-dim); font-size: 10px; cursor: pointer; }
+.sim-sw-toggle:hover,.sim-sw-push:hover { border-color: var(--accent-dim); color: var(--text); }
+.sim-sw-toggle[aria-pressed=true],.sim-lit { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+
+.sim-led-item { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+.sim-led-label { font-family: var(--mono); font-size: 10px; color: var(--text-dim); width: 44px; }
+.sim-led { width: 10px; height: 10px; border-radius: 50%; background: var(--bg-raised); border: 1px solid var(--border-hi); }
+.sim-led.lit { background: #ffe040; box-shadow: 0 0 5px #ffe040; border-color: #ffe040; }
+.sim-led-duty { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.sim-flags { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.sim-value { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.sim-check-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.sim-check-row input { accent-color: var(--accent); }
+.sim-leds { margin-top: 4px; }
+
+/* Status bar */
+#status-bar {
+  height: var(--status-h); display: flex; align-items: center;
+  padding: 0 10px; gap: 20px;
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+  font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+  flex-shrink: 0;
+}
+.status-field { white-space: nowrap; overflow: hidden; }
+#status-xy   { min-width: 130px; }
+#status-info { flex: 1; }
+#status-mode { min-width: 60px; text-align: right; color: var(--accent-dim); }
+
+/* Build messages panel (collapsible, above status bar) */
+#build-bar {
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+  flex-shrink: 0; overflow: hidden;
+  transition: max-height .2s ease;
+  max-height: 0;
+}
+#build-bar.open { max-height: 180px; }
+#build-messages {
+  padding: 6px 10px; overflow-y: auto; max-height: 160px;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+}
+.msg-info    { color: var(--text-dim); }
+.msg-success { color: var(--accent); }
+.msg-errors  { color: var(--danger); }
+.msg-warnings{ color: var(--warn); }
+
+/* Toolbar */
+.tb-sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+.tb-label { font-size: 11px; color: var(--text-dim); padding: 0 4px; white-space: nowrap; }
+
+button.tb {
+  height: 28px; padding: 0 8px; border-radius: var(--radius);
+  border: 1px solid transparent; background: transparent;
+  color: var(--text); font-size: 12px; cursor: pointer; white-space: nowrap;
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+button.tb:hover { background: var(--bg-raised); border-color: var(--border-hi); }
+button.tb.accent { background: var(--accent-dim); color: #fff; border-color: var(--accent-dim); }
+button.tb.accent:hover { background: var(--accent); border-color: var(--accent); }
+button.tb:disabled { opacity: .35; cursor: not-allowed; }
+
+/* Sidebar */
+.sidebar-section { border-bottom: 1px solid var(--border); }
+.sidebar-search { padding: 6px 8px; }
+.sidebar-search input {
+  width: 100%; background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text); font-size: 12px; padding: 4px 7px;
+  font-family: var(--mono); outline: none;
+}
+.sidebar-search input:focus { border-color: var(--accent-dim); }
+.lib-group-header {
+  padding: 5px 10px; font-size: 11px; font-weight: 600;
+  color: var(--text-dim); cursor: pointer; user-select: none;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.lib-group-header:hover { color: var(--text); background: var(--bg-raised); }
+.lib-group-header .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.lib-group-header span { flex: 1; margin-left: 7px; }
+.block-item {
+  padding: 4px 10px 4px 22px; font-size: 12px; cursor: pointer;
+  color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--mono);
+}
+.block-item:hover { color: var(--text); background: var(--bg-raised); }
+
+/* Modals */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.65);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.modal-backdrop.hidden { display: none; }
+.modal {
+  background: var(--bg-raised); border: 1px solid var(--border-hi);
+  border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.6);
+  min-width: 340px; max-width: 540px; width: 90vw; max-height: 80vh;
+  display: flex; flex-direction: column;
+}
+.modal-title { padding: 14px 16px 12px; font-size: 14px; font-weight: 600; color: var(--text-hi); border-bottom: 1px solid var(--border); flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; }
+.modal-close { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 18px; padding: 0 2px; }
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 16px; overflow-y: auto; flex: 1; }
+.modal-footer { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+
+.form-row { margin-bottom: 12px; }
+.form-label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+.form-input,.form-select { width: 100%; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; padding: 6px 8px; font-family: var(--mono); outline: none; }
+.form-input:focus,.form-select:focus { border-color: var(--accent-dim); }
+.form-hint { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+.check-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.check-row input[type=checkbox] { accent-color: var(--accent); }
+
+button.btn { padding: 6px 14px; border-radius: var(--radius); border: 1px solid var(--border-hi); background: var(--bg-raised); color: var(--text); font-size: 12px; cursor: pointer; }
+button.btn:hover { border-color: var(--accent-dim); color: var(--text-hi); }
+button.btn.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; }
+button.btn.primary:hover { background: var(--accent); border-color: var(--accent); }
+button.btn.danger-btn { border-color: var(--danger); color: var(--danger); }
+button.btn.danger-btn:hover { background: var(--danger); color: #fff; }
+
+.net-list-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px; }
+.net-list-item:last-child { border-bottom: none; }
+.net-list-item input[type=checkbox] { accent-color: var(--accent); }
+
+.param-table { width: 100%; border-collapse: collapse; }
+.param-table td { padding: 5px 4px; vertical-align: middle; }
+.param-table td:first-child { color: var(--text-dim); font-size: 11px; font-family: var(--mono); width: 40%; }
+.param-desc { font-size: 10px; color: var(--text-dim); }
+
+.about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.about-kv { font-family: var(--mono); font-size: 12px; }
+.about-kv span { color: var(--text-dim); display: block; font-size: 10px; text-transform: uppercase; }
+
+/* pin tooltip */
+#pin-tip {
+  position: fixed; pointer-events: none; z-index: 90;
+  background: var(--bg-raised); border: 1px solid var(--accent-dim);
+  padding: 3px 8px; border-radius: var(--radius); font-family: var(--mono);
+  font-size: 11px; color: var(--accent); display: none; white-space: nowrap;
+}
+
+/* ---- Debug overlay panels ---- */
+/* ---- Debug overlay panels ---- */
+/* Panels use explicit pixel heights so calc() always resolves correctly.
+   The overlay is NOT a flex container — flex children with no explicit
+   height collapse when the parent has no explicit height, which made
+   the source body invisible. Explicit heights + overflow:auto is reliable. */
+.dbg-overlay {
+  position: absolute; z-index: 20;
+  background: rgba(17,20,24,0.97);
+  border: 1px solid var(--border-hi);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+  min-width: 280px;
+  pointer-events: all;
+  overflow: hidden;
+}
+.dbg-overlay.hidden { display: none; }
+
+/* Header — fixed height 34px, never scrolls */
+.dbg-overlay-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; height: 34px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  cursor: grab; user-select: none;
+  font-size: 11px; font-weight: 700; letter-spacing: .05em;
+  color: var(--accent); text-transform: uppercase;
+}
+.dbg-overlay-header:active { cursor: grabbing; }
+.dbg-header-btns { display: flex; gap: 4px; align-items: center; }
+.dbg-header-btn {
+  padding: 2px 8px; border-radius: var(--radius);
+  border: 1px solid var(--border-hi); background: var(--bg-raised);
+  color: var(--text); font-size: 11px; cursor: pointer; white-space: nowrap;
+}
+.dbg-header-btn:hover { border-color: var(--accent-dim); color: var(--text-hi); }
+.dbg-header-btn.active { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+.dbg-header-btn.danger { border-color: var(--warn); color: var(--warn); }
+.dbg-header-btn.danger:hover { background: var(--warn); color: #111; }
+.dbg-header-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* SOURCE PANEL — 520×420px, body = 420-34 = 386px */
+#dbg-source-panel { top: 20px; left: 20px; width: 520px; height: 420px; }
+#dbg-source-body {
+  height: 386px;           /* panel height - header */
+  overflow-y: auto; overflow-x: auto;
+  font-family: var(--mono); font-size: 11px; line-height: 1.6;
+}
+.dbg-src-line { display: flex; padding: 1px 8px; }
+.dbg-src-line:hover { background: var(--bg-raised); }
+.dbg-src-line.dbg-current {
+  background: rgba(0,200,160,0.18);
+  border-left: 3px solid var(--accent); padding-left: 5px;
+}
+.dbg-src-bp { width: 14px; flex-shrink: 0; text-align: center; cursor: pointer;
+              color: var(--border-hi); font-size: 13px; line-height: 1.5; }
+.dbg-src-bp:hover { color: var(--danger); }
+.dbg-src-pc { width: 44px; flex-shrink: 0; text-align: right; padding-right: 8px;
+              font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.dbg-src-text { font-family: var(--mono); font-size: 11px; color: var(--text);
+                white-space: pre; }
+.dbg-src-line.dbg-current .dbg-src-pc  { color: var(--accent); }
+.dbg-src-line.dbg-current .dbg-src-text { color: var(--text-hi); }
+
+/* REGISTER PANEL — 680×460px
+   header 34 + controls 34 + body variable + break-row 36 = 460
+   body = 460-34-34-36 = 356px */
+#dbg-reg-panel { top: 20px; right: 20px; width: 680px; height: 460px; }
+#dbg-reg-controls {
+  display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  height: 34px; flex-wrap: wrap;
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+}
+.dbg-reg-ctrl-label { font-size: 11px; color: var(--text-dim); }
+.dbg-reg-ctrl-select {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text); font-size: 11px;
+  padding: 2px 4px; outline: none;
+}
+#dbg-reg-body { height: 356px; overflow-y: auto; padding: 6px; }
+.dbg-reg-section-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-dim); padding: 4px 2px 2px; margin-top: 4px;
+}
+.dbg-reg-grid { display: grid; gap: 2px; margin-bottom: 8px; }
+.dbg-reg-grid.cols4 { grid-template-columns: repeat(4, 1fr); }
+.dbg-reg-grid.cols8 { grid-template-columns: repeat(8, 1fr); }
+.dbg-reg-cell {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 3px; padding: 3px 5px; font-family: var(--mono); font-size: 10px;
+  overflow: hidden;
+}
+.dbg-reg-cell.flags-cell { grid-column: 1 / -1; }
+.dbg-reg-name { color: var(--text-dim); font-size: 9px; display: block; }
+.dbg-reg-hex  { color: var(--accent-dim); display: block; }
+.dbg-reg-dec  { color: var(--text); display: block; }
+
+/* BREAKPOINT ROW — fixed 36px at bottom of register panel */
+#dbg-break-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 10px; height: 36px;
+  border-top: 1px solid var(--border);
+  font-size: 11px; font-family: var(--mono);
+  background: var(--bg-panel);
+}
+.dbg-break-label { color: var(--text-dim); }
+.dbg-break-input {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text); font-size: 11px;
+  font-family: var(--mono); padding: 2px 5px; outline: none; width: 68px;
+}
+.dbg-break-input:focus { border-color: var(--accent-dim); }
+.dbg-break-select {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text); font-size: 11px;
+  padding: 2px 4px; outline: none;
+}
+.dbg-break-active { color: var(--accent); font-weight: 600; }
+.hw-connect-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.hw-connect-btn { flex: 1; padding: 5px; border-radius: var(--radius); border: 1px solid var(--border-hi); background: var(--bg-raised); color: var(--text); font-size: 12px; cursor: pointer; }
+.hw-connect-btn:hover { border-color: var(--accent-dim); color: var(--text-hi); }
+.hw-connect-btn.connected { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+.hw-connect-btn.connected:hover { background: var(--danger); border-color: var(--danger); }
+
+.hw-status { font-size: 11px; font-family: var(--mono); color: var(--text-dim); margin-bottom: 6px; }
+.hw-status.connected { color: var(--accent); }
+.hw-status.error     { color: var(--danger); }
+
+.hw-addr-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; }
+.hw-addr-row label { color: var(--text-dim); width: 52px; flex-shrink: 0; }
+.hw-addr-input { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 3px 6px; width: 72px; outline: none; }
+.hw-addr-input:focus { border-color: var(--accent-dim); }
+
+.hw-slot-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; }
+.hw-slot-row label { color: var(--text-dim); width: 52px; flex-shrink: 0; }
+.hw-slot-row select { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 12px; padding: 3px 4px; flex: 1; outline: none; }
+
+.hw-action-btn { width: 100%; padding: 6px; border-radius: var(--radius); border: 1px solid var(--border-hi); background: var(--bg-raised); color: var(--text); font-size: 12px; cursor: pointer; margin-bottom: 4px; }
+.hw-action-btn:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--text-hi); }
+.hw-action-btn.primary { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+.hw-action-btn.primary:hover:not(:disabled) { background: var(--accent); }
+.hw-action-btn.danger  { border-color: var(--warn); color: var(--warn); }
+.hw-action-btn.danger:hover:not(:disabled) { background: var(--warn); color: #111; }
+.hw-action-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* scrollbars */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-panel); }
+::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== TOOLBAR ===== -->
+  <div id="toolbar">
+    <span class="tb-label" style="color:var(--accent);font-weight:700;font-family:var(--mono);letter-spacing:.08em;font-size:13px">GOOEYCORE STUDIO</span>
+    <div class="tb-sep"></div>
+
+    <button class="tb" onclick="cmd('new')"    title="New design">&#9633; New</button>
+    <button class="tb" onclick="cmd('open')"   title="Open .gcf design">&#128194; Open</button>
+    <button class="tb" onclick="cmd('save')"   title="Save design">&#128190; Save</button>
+    <button class="tb" onclick="cmd('saveas')" title="Save as">Save As</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" id="btn-undo" onclick="cmd('undo')" disabled title="Undo (Ctrl+Z)">&#8630; Undo</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" onclick="cmd('loadlibdir')" title="Load all .fxl files from a folder">+ Lib Folder</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" onclick="cmd('addtext')"   title="Add text label">&#9112; Text</button>
+    <button class="tb" onclick="cmd('selectall')" title="Select all (Ctrl+A)">Select All</button>
+    <button class="tb" onclick="cmd('deletesel')" title="Delete selected">&#128465; Del</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" id="btn-grid" onclick="toggleGrid()" title="Toggle grid">&#9783;</button>
+    <button class="tb" id="btn-id"   onclick="toggleIds()"  title="Toggle IDs">IDs</button>
+    <button class="tb" onclick="zoomTo(zoom + ZOOM_STEP)" title="Zoom in">&#43;</button>
+    <button class="tb" onclick="zoomTo(1.0)"              title="100%">100%</button>
+    <button class="tb" onclick="zoomTo(zoom - ZOOM_STEP)" title="Zoom out">&#8722;</button>
+    <button class="tb" onclick="fitDesign()"              title="Fit design in window">Fit</button>
+    <div class="tb-sep"></div>
+
+    <!-- Generate runs the full pipeline: fxc → preprocess → assemble → sim -->
+    <button class="tb accent" onclick="runPipeline()" title="Generate .fxc, preprocess, assemble and load simulator">&#9654; Build &amp; Run</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" onclick="cmd('prefs')" title="Settings">&#9881;</button>
+    <button class="tb" onclick="cmd('about')" title="About">?</button>
+
+    <div style="flex:1;text-align:right;font-family:var(--mono);font-size:11px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-left:10px;" id="title-display">untitled.gcf</div>
+  </div>
+
+  <!-- ===== MAIN AREA ===== -->
+  <div id="main-area">
+
+    <!-- Library sidebar -->
+    <div id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-search"><input type="text" id="block-search" placeholder="search blocks…" oninput="filterBlocks(this.value)"></div>
+      </div>
+      <div style="flex:1;overflow-y:auto;" id="lib-container"></div>
+    </div>
+
+    <!-- Canvas -->
+    <div id="canvas-wrap">
+      <canvas id="main-canvas"></canvas>
+
+      <!-- ===== SOURCE PANEL (floats over canvas when sim is active) ===== -->
+      <div class="dbg-overlay hidden" id="dbg-source-panel">
+        <div class="dbg-overlay-header" id="dbg-source-header">
+          <span>&#9654; Source  (<span id="dbg-pc-display">PC --</span>)</span>
+          <div class="dbg-header-btns">
+            <button class="dbg-header-btn" id="dbg-btn-pause"    onclick="dbgPause()"    title="Pause execution">&#9646;&#9646; Pause</button>
+            <button class="dbg-header-btn active" id="dbg-btn-continue" onclick="dbgContinue()" title="Continue">&#9654; Run</button>
+            <button class="dbg-header-btn" id="dbg-btn-step"     onclick="dbgStep()"     title="Single step one instruction">Step</button>
+            <button class="dbg-header-btn danger" onclick="dbgClearBreak()" title="Clear breakpoint">&#8864; Brk</button>
+            <button class="dbg-header-btn" onclick="dbgCloseSource()" title="Close">&#10005;</button>
+          </div>
+        </div>
+        <div id="dbg-source-body"></div>
+      </div>
+
+      <!-- ===== REGISTER PANEL (floats over canvas when sim is active) ===== -->
+      <div class="dbg-overlay hidden" id="dbg-reg-panel">
+        <div class="dbg-overlay-header" id="dbg-reg-header">
+          <span>Registers</span>
+          <div class="dbg-header-btns">
+            <button class="dbg-header-btn" onclick="dbgCloseRegs()" title="Close">&#10005;</button>
+          </div>
+        </div>
+        <div id="dbg-reg-controls">
+          <span class="dbg-reg-ctrl-label">Width:</span>
+          <select class="dbg-reg-ctrl-select" id="dbgRegCols" onchange="dbgRenderRegs()">
+            <option value="4" selected>4 columns</option>
+            <option value="8">8 columns</option>
+          </select>
+          <span class="dbg-reg-ctrl-label">Format:</span>
+          <select class="dbg-reg-ctrl-select" id="dbgRegFmt" onchange="dbgRenderRegs()">
+            <option value="both" selected>Hex + S.31</option>
+            <option value="hex">Hex only</option>
+            <option value="dec">S.31 only</option>
+            <option value="int">Integer only</option>
+          </select>
+          <span class="dbg-reg-ctrl-label">Precision:</span>
+          <select class="dbg-reg-ctrl-select" id="dbgRegPrec" onchange="dbgRenderRegs()">
+            <option value="3">3 dp</option>
+            <option value="6" selected>6 dp</option>
+            <option value="10">10 dp</option>
+          </select>
+          <button class="dbg-header-btn" id="dbgRegAllBtn" onclick="dbgToggleShowAll()"
+                  title="Show all 128 MREGs instead of only used ones">All 128</button>
+          <span class="dbg-reg-ctrl-label" id="dbgUpdateRate" style="margin-left:auto;color:var(--accent-dim)"></span>
+        </div>
+        <div id="dbg-reg-body"></div>
+        <!-- Breakpoint configuration -->
+        <div id="dbg-break-row">
+          <span class="dbg-break-label">Break when:</span>
+          <select class="dbg-break-select" id="dbgBkBank">
+            <option value="creg">CREG</option>
+            <option value="mreg">MREG</option>
+          </select>
+          <input class="dbg-break-input" id="dbgBkReg" value="0" style="width:52px" placeholder="index" title="Register index (0-based)">
+          <select class="dbg-break-select" id="dbgBkOp">
+            <option value=">">&gt;</option>
+            <option value="<">&lt;</option>
+            <option value="=">=</option>
+            <option value="!=">≠</option>
+          </select>
+          <input class="dbg-break-input" id="dbgBkVal" value="0" placeholder="-1.0..+1.0" title="Threshold as S.31 decimal e.g. 0.5">
+          <button class="dbg-header-btn" onclick="dbgSetBreak()">Set</button>
+          <button class="dbg-header-btn danger" onclick="dbgClearBreak()">Clear</button>
+          <span id="dbgBkStatus" class="dbg-break-active" style="display:none">&#9679; ACTIVE</span>
+        </div>
+      </div>
+
+    </div><!-- end canvas-wrap -->
+
+    <!-- ===== SIMULATOR PANEL ===== -->
+    <div id="sim-panel">
+      <div id="sim-panel-header">Test Drive — FXCore Sim</div>
+
+      <div class="sim-section">
+        <div class="sim-transport">
+          <button id="simPlayBtn" class="sim-play-btn" onclick="studioTogglePlay()">Play</button>
+          <button class="sim-panic-btn" onclick="simPanic()">Reset</button>
+        </div>
+        <div id="simStatus" class="sim-status">Idle</div>
+        <div class="sim-row">
+          <label>Program</label>
+          <span id="simProgramState" class="sim-program-state">Not loaded — press Build &amp; Run</span>
+        </div>
+        <div class="sim-check-row" style="margin-top:4px">
+          <input type="checkbox" id="simAutoReload" checked>
+          <label for="simAutoReload" style="font-size:11px;color:var(--text-dim)">Reset on build</label>
+        </div>
+      </div>
+
+      <div class="sim-section">
+        <h4>Outputs</h4>
+        <div class="sim-meters">
+          <div class="sim-meter-row"><span>OUT0</span><div class="sim-meter"><div id="simMeter0" class="sim-meter-bar"></div></div></div>
+          <div class="sim-meter-row"><span>OUT1</span><div class="sim-meter"><div id="simMeter1" class="sim-meter-bar"></div></div></div>
+          <div class="sim-meter-row"><span>OUT2</span><div class="sim-meter"><div id="simMeter2" class="sim-meter-bar"></div></div></div>
+          <div class="sim-meter-row"><span>OUT3</span><div class="sim-meter"><div id="simMeter3" class="sim-meter-bar"></div></div></div>
+        </div>
+        <div class="sim-row">
+          <label style="font-size:11px">L/R</label>
+          <select id="simOutL" onchange="simSendRoute()" style="flex:1;margin-right:4px">
+            <option value="0" selected>OUT0</option><option value="1">OUT1</option><option value="2">OUT2</option><option value="3">OUT3</option>
+          </select>
+          <select id="simOutR" onchange="simSendRoute()" style="flex:1">
+            <option value="0">OUT0</option><option value="1" selected>OUT1</option><option value="2">OUT2</option><option value="3">OUT3</option>
+          </select>
+        </div>
+        <div class="sim-check-row">
+          <input type="checkbox" id="simMirrorIn" onchange="simSendRoute()">
+          <label for="simMirrorIn" style="font-size:11px;color:var(--text-dim)">Mirror IN0/1→IN2/3</label>
+        </div>
+        <div class="sim-check-row" style="margin-top:2px">
+          <input type="checkbox" id="simLedPwm" checked>
+          <label for="simLedPwm" style="font-size:11px;color:var(--text-dim)">LED PWM brightness</label>
+        </div>
+        <div class="sim-leds" style="margin-top:4px">
+          <div class="sim-led-item"><span id="simUser0Label" class="sim-led-label">USER0</span><span id="simUser0" class="sim-led"></span><span id="simUser0Duty" class="sim-led-duty">0%</span></div>
+          <div class="sim-led-item"><span id="simUser1Label" class="sim-led-label">USER1</span><span id="simUser1" class="sim-led"></span><span id="simUser1Duty" class="sim-led-duty">0%</span></div>
+        </div>
+        <div id="simFlags" class="sim-flags">Tap -</div>
+      </div>
+
+      <div class="sim-section">
+        <h4>Clock</h4>
+        <div class="sim-row">
+          <label>Rate</label>
+          <select id="simRate" onchange="simOnRateChange()">
+            <option value="12000">12 kHz</option>
+            <option value="24000">24 kHz</option>
+            <option value="32000">32 kHz</option>
+            <option value="48000" selected>48 kHz</option>
+          </select>
+        </div>
+        <div id="simRateInfo" class="sim-value">Max delay 0.683 s, Nyquist 24.0 kHz</div>
+      </div>
+
+      <div class="sim-section">
+        <h4>Source</h4>
+        <div class="sim-row">
+          <label>Input</label>
+          <select id="simSource" onchange="simOnSourceChange()">
+            <option value="tone">Sine</option>
+            <option value="saw">Sawtooth</option>
+            <option value="square">Square</option>
+            <option value="pluck">Pluck</option>
+            <option value="noise">Noise</option>
+            <option value="click">Clicks (1 s)</option>
+            <option value="impulse">Impulse</option>
+            <option value="file">Audio file</option>
+            <option value="input">Live input</option>
+          </select>
+        </div>
+        <div id="simToneRow" class="sim-slider-row">
+          <label>Freq</label>
+          <input type="range" id="simToneFreq" min="20" max="5000" value="440" oninput="simOnToneFreqChange()">
+          <span id="simToneFreqValue" class="sim-value">440 Hz</span>
+        </div>
+        <!-- Impulse controls: delay before impulse, duration, amplitude -->
+        <div id="simImpulseRow" style="display:none">
+          <div class="sim-slider-row">
+            <label>Delay</label>
+            <input type="range" id="simImpulseDelay" min="0" max="2" step="0.01" value="0" oninput="simUpdateImpulseDisplay()">
+            <span id="simImpulseDelayValue" class="sim-value">0.00 s</span>
+          </div>
+          <div class="sim-slider-row">
+            <label>Width</label>
+            <input type="range" id="simImpulseDuration" min="1" max="256" step="1" value="1" oninput="simUpdateImpulseDisplay()">
+            <span id="simImpulseDurationValue" class="sim-value">1 smp</span>
+          </div>
+          <div class="sim-slider-row">
+            <label>Amp</label>
+            <input type="range" id="simImpulseAmp" min="0" max="1" step="0.01" value="1" oninput="simUpdateImpulseDisplay()">
+            <span id="simImpulseAmpValue" class="sim-value">1.00</span>
+          </div>
+        </div>
+        <div id="simFileRow" class="sim-row" style="display:none">
+          <label>File</label>
+          <input type="file" id="simFile" accept="audio/*" onchange="simLoadAudioFile(this)">
+        </div>
+      </div>
+
+      <div class="sim-section">
+        <h4>Pots</h4>
+        <div class="sim-slider-row"><label><span id="simPot0Label">POT0</span></label><input type="range" id="simPot0" min="0" max="100" value="50" oninput="simSendPots()"><span id="simPot0Value" class="sim-value">50%</span></div>
+        <div class="sim-slider-row"><label><span id="simPot1Label">POT1</span></label><input type="range" id="simPot1" min="0" max="100" value="50" oninput="simSendPots()"><span id="simPot1Value" class="sim-value">50%</span></div>
+        <div class="sim-slider-row"><label><span id="simPot2Label">POT2</span></label><input type="range" id="simPot2" min="0" max="100" value="50" oninput="simSendPots()"><span id="simPot2Value" class="sim-value">50%</span></div>
+        <div class="sim-slider-row"><label><span id="simPot3Label">POT3</span></label><input type="range" id="simPot3" min="0" max="100" value="50" oninput="simSendPots()"><span id="simPot3Value" class="sim-value">50%</span></div>
+        <div class="sim-slider-row"><label><span id="simPot4Label">POT4</span></label><input type="range" id="simPot4" min="0" max="100" value="50" oninput="simSendPots()"><span id="simPot4Value" class="sim-value">50%</span></div>
+        <div class="sim-slider-row"><label><span id="simPot5Label">POT5</span></label><input type="range" id="simPot5" min="0" max="100" value="50" oninput="simSendPots()"><span id="simPot5Value" class="sim-value">50%</span></div>
+      </div>
+
+      <div class="sim-section">
+        <h4>Switches</h4>
+        <div class="sim-switch-list">
+          <div class="sim-switch-row"><span class="sim-sw-name" id="simSw0Label">SW0</span><button type="button" class="sim-sw-toggle" id="simSw0" aria-pressed="false" onclick="simSwToggle('simSw0')">TOGGLE</button><button type="button" class="sim-sw-push" onmousedown="simSwPress('simSw0')" onmouseup="simSwRelease('simSw0')" onmouseleave="simSwRelease('simSw0')">PUSH</button></div>
+          <div class="sim-switch-row"><span class="sim-sw-name" id="simSw1Label">SW1</span><button type="button" class="sim-sw-toggle" id="simSw1" aria-pressed="false" onclick="simSwToggle('simSw1')">TOGGLE</button><button type="button" class="sim-sw-push" onmousedown="simSwPress('simSw1')" onmouseup="simSwRelease('simSw1')" onmouseleave="simSwRelease('simSw1')">PUSH</button></div>
+          <div class="sim-switch-row"><span class="sim-sw-name" id="simSw2Label">SW2</span><button type="button" class="sim-sw-toggle" id="simSw2" aria-pressed="false" onclick="simSwToggle('simSw2')">TOGGLE</button><button type="button" class="sim-sw-push" onmousedown="simSwPress('simSw2')" onmouseup="simSwRelease('simSw2')" onmouseleave="simSwRelease('simSw2')">PUSH</button></div>
+          <div class="sim-switch-row"><span class="sim-sw-name" id="simSw3Label">SW3</span><button type="button" class="sim-sw-toggle" id="simSw3" aria-pressed="false" onclick="simSwToggle('simSw3')">TOGGLE</button><button type="button" class="sim-sw-push" onmousedown="simSwPress('simSw3')" onmouseup="simSwRelease('simSw3')" onmouseleave="simSwRelease('simSw3')">PUSH</button></div>
+          <div class="sim-switch-row"><span class="sim-sw-name" id="simSw4Label">SW4</span><button type="button" class="sim-sw-toggle" id="simSw4" aria-pressed="false" onclick="simSwToggle('simSw4')">TOGGLE</button><button type="button" class="sim-sw-push" onmousedown="simSwPress('simSw4')" onmouseup="simSwRelease('simSw4')" onmouseleave="simSwRelease('simSw4')">PUSH</button></div>
+          <div class="sim-switch-row"><span class="sim-sw-name" id="simTapLabel">TAP</span><button type="button" class="sim-sw-toggle" id="simTap" aria-pressed="false" onclick="simSwToggle('simTap')">TOGGLE</button><button type="button" class="sim-sw-push" onmousedown="simSwPress('simTap')" onmouseup="simSwRelease('simTap')" onmouseleave="simSwRelease('simTap')">PUSH</button></div>
+          <div class="sim-switch-row"><span class="sim-sw-name">ENABLE</span><button type="button" class="sim-sw-toggle sim-lit" id="simEnable" aria-pressed="true" onclick="simSwToggle('simEnable')">TOGGLE</button><button type="button" class="sim-sw-push" onmousedown="simSwPress('simEnable')" onmouseup="simSwRelease('simEnable')" onmouseleave="simSwRelease('simEnable')">PUSH</button></div>
+        </div>
+      </div>
+
+      <div class="sim-section">
+        <h4>Levels</h4>
+        <div class="sim-slider-row">
+          <label>In</label>
+          <input type="range" id="simInputLevel" min="-40" max="12" value="-6" oninput="simApplyLevels()">
+          <span id="simInputLevelValue" class="sim-value">-6 dB</span>
+        </div>
+        <div class="sim-slider-row">
+          <label>Out</label>
+          <input type="range" id="simOutputLevel" min="-40" max="12" value="0" oninput="simApplyLevels()">
+          <span id="simOutputLevelValue" class="sim-value">0 dB</span>
+        </div>
+      </div>
+
+      <!-- ===== HARDWARE PROGRAMMING PANEL ===== -->
+      <div class="sim-section">
+        <h4>Hardware — Program Device</h4>
+
+        <!-- Connect / Disconnect -->
+        <div class="hw-connect-row">
+          <button id="hwConnectBtn" class="hw-connect-btn" onclick="hwConnect()">Connect Device</button>
+        </div>
+        <div id="hwStatus" class="hw-status">No device connected</div>
+
+        <!-- I2C address -->
+        <div class="hw-addr-row">
+          <label>I2C addr</label>
+          <input id="hwAddr" class="hw-addr-input" value="0x30"
+                 onchange="hwApplyAddr()"
+                 title="7-bit I2C address of the FXCore chip (usually 0x30 on dev boards)">
+        </div>
+
+        <!-- Program target -->
+        <div class="hw-slot-row">
+          <label>Target</label>
+          <select id="hwSlot" onchange="hwSlotChanged()">
+            <option value="ram" selected>Run from RAM</option>
+            <option value="0">Flash slot 0</option>
+            <option value="1">Flash slot 1</option>
+            <option value="2">Flash slot 2</option>
+            <option value="3">Flash slot 3</option>
+            <option value="4">Flash slot 4</option>
+            <option value="5">Flash slot 5</option>
+            <option value="6">Flash slot 6</option>
+            <option value="7">Flash slot 7</option>
+            <option value="8">Flash slot 8</option>
+            <option value="9">Flash slot 9</option>
+            <option value="10">Flash slot 10</option>
+            <option value="11">Flash slot 11</option>
+            <option value="12">Flash slot 12</option>
+            <option value="13">Flash slot 13</option>
+            <option value="14">Flash slot 14</option>
+            <option value="15">Flash slot 15</option>
+          </select>
+        </div>
+
+        <!-- Program / Exit RFR -->
+        <button id="hwProgramBtn" class="hw-action-btn primary" onclick="hwProgram()" disabled>
+          Run from RAM
+        </button>
+        <button id="hwExitRfrBtn" class="hw-action-btn danger" onclick="hwExitRfr()" disabled
+                title="Stop Run-from-RAM and return chip to normal operation">
+          Exit Run from RAM
+        </button>
+      </div><!-- end hardware panel -->
+    </div><!-- end sim-panel -->
+
+  </div><!-- end main-area -->
+
+  <!-- ===== BUILD MESSAGES ===== -->
+  <div id="build-bar">
+    <div id="build-messages"></div>
+  </div>
+
+  <!-- ===== STATUS BAR ===== -->
+  <div id="status-bar">
+    <div class="status-field" id="status-xy">X: 0  Y: 0</div>
+    <div class="status-field" id="status-pin"></div>
+    <div class="status-field" id="status-info" style="flex:1"></div>
+    <div class="status-field" id="status-mode">100%</div>
+  </div>
+</div><!-- end app -->
+
+<!-- Pin tooltip -->
+<div id="pin-tip"></div>
+
+<!-- ===== MODALS (copied from standalone gooeycore.html) ===== -->
+
+<!-- Settings -->
+<div class="modal-backdrop hidden" id="modal-prefs">
+  <div class="modal">
+    <div class="modal-title">Settings <button class="modal-close" onclick="closeModal('modal-prefs')">&#10005;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label class="form-label">Version string (written in .fxc header comment)</label>
+        <input class="form-input" id="pref-ver" placeholder="1.0">
+      </div>
+      <div class="form-row">
+        <label class="form-label">Canvas size</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="form-input" id="pref-cw" style="width:80px" type="number" min="800" max="8000" step="100">
+          <span style="color:var(--text-dim)">×</span>
+          <input class="form-input" id="pref-ch" style="width:80px" type="number" min="600" max="8000" step="100">
+          <span style="font-size:11px;color:var(--text-dim)">px</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Grid size</label>
+        <input class="form-input" id="pref-grid" style="width:80px" type="number" min="5" max="100" step="5">
+        <div class="form-hint">Grid size for visual reference only.</div>
+      </div>
+      <div class="form-row">
+        <div class="check-row">
+          <input type="checkbox" id="pref-expert" onchange="prefs.expertMode=this.checked">
+          <label for="pref-expert">Expert mode (show CREG blocks)</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Block font size (px)</label>
+        <input class="form-input" id="pref-fontsize" style="width:80px" type="number" min="8" max="24" step="1">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-prefs')">Cancel</button>
+      <button class="btn primary" onclick="savePrefs()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Block properties -->
+<div class="modal-backdrop hidden" id="modal-blockprops">
+  <div class="modal">
+    <div class="modal-title"><span id="bp-title">Block Properties</span><button class="modal-close" onclick="closeModal('modal-blockprops')">&#10005;</button></div>
+    <div class="modal-body"><table class="param-table" id="bp-params"></table></div>
+    <div class="modal-footer">
+      <button class="btn danger-btn" onclick="deleteCurrentBlock()">Delete Block</button>
+      <button class="btn" onclick="closeModal('modal-blockprops')">Cancel</button>
+      <button class="btn primary" onclick="saveBlockProps()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Net properties -->
+<div class="modal-backdrop hidden" id="modal-netprops">
+  <div class="modal">
+    <div class="modal-title">Connections at this pin <button class="modal-close" onclick="closeModal('modal-netprops')">&#10005;</button></div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">Check connections to delete them.</div>
+      <div id="net-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-netprops')">Cancel</button>
+      <button class="btn danger-btn" onclick="deleteCheckedNets()">Delete Checked</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add / edit text -->
+<div class="modal-backdrop hidden" id="modal-addtext">
+  <div class="modal" style="min-width:300px;max-width:420px">
+    <div class="modal-title"><span id="at-title">Add Text Label</span><button class="modal-close" onclick="closeModal('modal-addtext')">&#10005;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label class="form-label">Text</label>
+        <textarea class="form-input" id="at-text" rows="4" style="resize:vertical"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-addtext')">Cancel</button>
+      <button class="btn primary" onclick="commitText()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- About -->
+<div class="modal-backdrop hidden" id="modal-about">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">About GooeyCore Studio <button class="modal-close" onclick="closeModal('modal-about')">&#10005;</button></div>
+    <div class="modal-body">
+      <div style="text-align:center;margin-bottom:16px">
+        <div style="font-family:var(--mono);font-size:20px;color:var(--accent);letter-spacing:.1em">GOOEYCORE STUDIO</div>
+        <div style="color:var(--text-dim);font-size:12px;margin-top:4px">Visual DSP Design + Assembler + Simulator</div>
+      </div>
+      <div class="about-grid">
+        <div class="about-kv"><span>Design format</span>.gcf (XML)</div>
+        <div class="about-kv"><span>Outputs</span>.fxc .fxo .hex .lst</div>
+        <div class="about-kv"><span>Hardware target</span>FXCore DSP · Exp Noize</div>
+        <div class="about-kv"><span>Platform</span>Browser / HTML5</div>
+      </div>
+      <div style="margin-top:14px;font-size:11px;color:var(--text-dim);line-height:1.6">
+        Place blocks from the library panel. Connect pins by dragging.<br>
+        Right-click a block to edit parameters. Right-click a pin to manage connections.<br>
+        Press <strong>Build &amp; Run</strong> to generate all output files and load the simulator.
+      </div>
+    </div>
+    <div class="modal-footer"><button class="btn primary" onclick="closeModal('modal-about')">Close</button></div>
+  </div>
+</div>
+
+<!-- Hidden file inputs -->
+<input type="file" id="fi-design" accept=".gcf,.GCF,*/*" style="display:none" onchange="loadDesignFile(this)">
+<input type="file" id="fi-lib"    accept=".fxl,.FXL,*/*" style="display:none" multiple onchange="loadLibFiles(this)">
+<input type="file" id="fi-libdir" style="display:none"   multiple webkitdirectory mozdirectory onchange="loadLibDirFiles(this)">
+<a id="dl-anchor" style="display:none"></a>
+
+<!-- Hidden textarea required by run_from_ram() in FXCoreFunctions.js.
+     Populated with assembled HEX after a successful build. -->
+<textarea id="output" style="display:none"></textarea>
+
+<!-- ===== ASSEMBLER AND SIMULATOR SCRIPTS (unchanged shared files) ===== -->
+<!-- Load order matches index.html: infrastructure first, then assembler, then sim -->
+<script src="debug_config.js"></script>
+<script src="common.js"></script>
+<script src="reserved_words.js"></script>
+<script src="registers.js"></script>
+<script src="mnemonic.js"></script>
+<script src="shunting_yard.js"></script>
+<script src="line_parse.js"></script>
+<script src="intel_hex.js"></script>
+<script src="symbol_table.js"></script>
+<script src="fxcore_ic.js"></script>
+<script src="assembler.js"></script>
+<script src="fxl_library.js"></script>
+<script src="preprocessor.js"></script>
+<script src="program.js"></script>
+<script src="fxcore-emu.js"></script>
+<script src="fxcore-sim.js"></script>
+<script src="fxcore-midi.js"></script>
+<!-- HID device programming (unchanged shared files) -->
+<script src="FT260_wrap.js"></script>
+<script src="FXCoreTargets.js"></script>
+<script src="FXCoreProgrammer.js"></script>
+<script src="FXCoreFunctions.js"></script>
+
+<!-- ===== GOOEYCORE STUDIO SCRIPT ===== -->
+<script src="gooeycore_studio.js"></script>
+
+<script>
+// ============================================================
+//  Studio glue — wires the GooeyCore canvas to the build
+//  pipeline and the simulator.  Nothing here touches the
+//  shared assembler/simulator files.
+// ============================================================
+
+'use strict';
+
+// ============================================================
+//  Hardware programming glue
+//
+//  Wraps connectDevice(), disconnectDevice(), run_from_ram()
+//  and exit_rfr() from FXCoreFunctions.js (unchanged shared).
+//
+//  run_from_ram() reads assembled HEX from
+//  document.getElementById('output').value.  We populate that
+//  hidden textarea from FXCoreAssembler.assembledHex before
+//  every call so FXCoreFunctions.js needs no changes.
+// ============================================================
+
+// Globals that FXCoreFunctions.js references directly —
+// must be declared here to match ui.js expectations.
+let selectedProgram  = 'ram';   // 'ram' or '0'..'15'
+let selectedHW       = 'hid';   // always HID in the studio
+let isRunningFromRAM = false;
+
+function hwApplyAddr() {
+  const raw = (document.getElementById('hwAddr').value || '0x30').trim();
+  const val = /^0x/i.test(raw) ? parseInt(raw, 16) : parseInt(raw, 10);
+  if (!isNaN(val)) {
+    FXCoreTargets.FXCore_I2C = val & 0x7F;
+    document.getElementById('hwAddr').value =
+      '0x' + (val & 0x7F).toString(16).toUpperCase().padStart(2, '0');
+  }
+}
+
+function hwSlotChanged() {
+  selectedProgram = document.getElementById('hwSlot').value;
+  const btn = document.getElementById('hwProgramBtn');
+  if (btn) btn.textContent = selectedProgram === 'ram'
+    ? 'Run from RAM' : `Flash to Slot ${selectedProgram}`;
+  hwUpdateUI();
+}
+
+async function hwConnect() {
+  // Check for WebHID support first — only Chromium-based desktop browsers
+  // (Chrome 89+, Edge 89+, Opera 76+) support navigator.hid.
+  if (!navigator.hid) {
+    pipelineLog(
+      '✗ WebHID is not supported in this browser. ' +
+      'Use Chrome or Edge (desktop) to program the device.',
+      'errors'
+    );
+    document.getElementById('build-bar').classList.add('open');
+    return;
+  }
+
+  document.getElementById('build-bar').classList.add('open');
+
+  try {
+    const isConn = !!(FXCoreTargets.device && FXCoreTargets.device.opened);
+    pipelineLog(isConn ? 'Disconnecting…' : 'Opening device picker…', 'info');
+
+    if (isConn) {
+      await disconnectDevice();
+      pipelineLog('Device disconnected.', 'info');
+    } else {
+      // connectDevice() calls FT260Wrapper.requestDevice() which shows the
+      // browser device picker.  It must be called from a direct user gesture.
+      await connectDevice();
+
+      // Report outcome — connectDevice() sets FXCoreTargets.device on success.
+      if (FXCoreTargets.device && FXCoreTargets.device.opened) {
+        pipelineLog(
+          '✓ Connected: ' + (FXCoreTargets.device.productName || 'device'),
+          'success'
+        );
+      } else {
+        pipelineLog(
+          'No device was selected or the connection failed. ' +
+          'Check the browser console (F12) for details.',
+          'errors'
+        );
+      }
+    }
+  } catch (err) {
+    pipelineLog('✗ Connection error: ' + err.message, 'errors');
+    console.error('[hwConnect]', err);
+  }
+
+  hwUpdateUI();
+}
+
+// Called by connectDevice()/disconnectDevice() via this name.
+function updateHardwareConnectionStatus() { hwUpdateUI(); }
+
+function hwUpdateUI() {
+  const hidSupported = !!navigator.hid;
+  const isConn  = !!(FXCoreTargets.device && FXCoreTargets.device.opened);
+  const hasHex  = !!(typeof FXCoreAssembler !== 'undefined' &&
+                     FXCoreAssembler.assembledHex);
+
+  const connectBtn = document.getElementById('hwConnectBtn');
+  const statusEl   = document.getElementById('hwStatus');
+  const programBtn = document.getElementById('hwProgramBtn');
+  const exitRfrBtn = document.getElementById('hwExitRfrBtn');
+
+  if (connectBtn) {
+    if (!hidSupported) {
+      connectBtn.textContent = 'WebHID not supported';
+      connectBtn.disabled = true;
+      connectBtn.classList.remove('connected');
+    } else {
+      connectBtn.disabled = false;
+      connectBtn.textContent = isConn ? 'Disconnect' : 'Connect Device';
+      connectBtn.classList.toggle('connected', isConn);
+    }
+  }
+  if (statusEl) {
+    if (!hidSupported) {
+      statusEl.textContent = 'WebHID requires Chrome or Edge (desktop)';
+      statusEl.className = 'hw-status error';
+    } else if (isConn) {
+      const name = FXCoreTargets.device.productName || 'device';
+      statusEl.textContent = isRunningFromRAM
+        ? `Connected: ${name}  [RUN FROM RAM]`
+        : `Connected: ${name}`;
+      statusEl.className = 'hw-status connected';
+    } else {
+      statusEl.textContent = 'No device connected';
+      statusEl.className = 'hw-status';
+    }
+  }
+  if (programBtn) {
+    programBtn.disabled = !(hidSupported && isConn && hasHex);
+    programBtn.textContent = selectedProgram === 'ram'
+      ? 'Run from RAM' : `Flash to Slot ${selectedProgram}`;
+  }
+  if (exitRfrBtn) {
+    exitRfrBtn.disabled = !(hidSupported && isConn && isRunningFromRAM);
+  }
+}
+
+async function hwProgram() {
+  if (typeof FXCoreAssembler === 'undefined' || !FXCoreAssembler.assembledHex) {
+    pipelineLog('No assembled program — press Build & Run first.', 'errors');
+    document.getElementById('build-bar').classList.add('open');
+    return;
+  }
+  if (!FXCoreTargets.device || !FXCoreTargets.device.opened) {
+    pipelineLog('No device connected — use Connect Device first.', 'errors');
+    document.getElementById('build-bar').classList.add('open');
+    return;
+  }
+  // Populate the hidden textarea that run_from_ram() reads from.
+  const out = document.getElementById('output');
+  if (out) out.value = FXCoreAssembler.assembledHex;
+
+  hwApplyAddr();
+
+  const action = (selectedProgram === 'ram') ? 0 : 1;
+  pipelineLog(action === 0
+    ? 'Programming device — Run from RAM…'
+    : `Programming device — Flash slot ${selectedProgram}…`, 'info');
+  document.getElementById('build-bar').classList.add('open');
+
+  const ok = await run_from_ram(action);
+  if (ok) {
+    if (action === 0) {
+      isRunningFromRAM = true;
+      pipelineLog('✓ Running from RAM. Press "Exit Run from RAM" to return chip to normal.', 'success');
+    } else {
+      pipelineLog(`✓ Program flashed to slot ${selectedProgram}.`, 'success');
+    }
+  } else {
+    pipelineLog('✗ Programming failed — check the device connection and try again.', 'errors');
+  }
+  hwUpdateUI();
+}
+
+async function hwExitRfr() {
+  if (!FXCoreTargets.device || !FXCoreTargets.device.opened) {
+    pipelineLog('No device connected.', 'errors');
+    return;
+  }
+  pipelineLog('Exiting Run from RAM…', 'info');
+  document.getElementById('build-bar').classList.add('open');
+  await exit_rfr();
+  isRunningFromRAM = false;
+  pipelineLog('✓ Chip returned to normal operation.', 'success');
+  hwUpdateUI();
+}
+
+/**
+ * runPipeline()  — called by the "Build & Run" toolbar button.
+ *
+ * Opens the build messages panel then calls generate() which is defined in
+ * gooeycore_studio.js and runs the full fxc → preprocess → assemble → sim
+ * pipeline.  We do NOT shim debugLog here — the assembler can emit hundreds
+ * or thousands of debug messages and appending each one to the DOM synchronously
+ * hangs the browser.  The assembler's own error/warning output goes to the
+ * browser console; our explicit pipelineLog() calls populate the build panel.
+ */
+function runPipeline() {
+  // Always save the .gcf design first so the user never loses the
+  // graphical version by forgetting to save before building.
+  if (typeof saveDesign === 'function') saveDesign();
+
+  // Show the build messages panel.
+  const bar = document.getElementById('build-bar');
+  if (bar) bar.classList.add('open');
+  generate();
+}
+
+// Called by the Play button in the sim panel.
+// Shows debug panels on first press then delegates to the original simTogglePlay.
+function studioTogglePlay() {
+  const wasRunning = simRunning;
+  simTogglePlay();  // original from fxcore-sim.js — untouched
+  // If we just started, show the debug panels after a short delay to let
+  // simStart() finish its async init and set simRunning = true.
+  if (!wasRunning) {
+    setTimeout(() => {
+      if (simRunning) dbgShowPanels();
+    }, 400);
+  }
+}
+
+function dbgShowPanels() {
+  const sp = document.getElementById('dbg-source-panel');
+  const rp = document.getElementById('dbg-reg-panel');
+  if (sp) sp.classList.remove('hidden');
+  if (rp) rp.classList.remove('hidden');
+  // Rebuild the source listing now that the panel is visible — this also
+  // covers the case where the build-time call ran while the panel was hidden.
+  if (typeof dbgBuildSourcePanel === 'function') dbgBuildSourcePanel();
+  dbgPaused = false;
+  if (typeof dbgUpdateBtns === 'function') dbgUpdateBtns();
+}
+
+// Impulse slider display update.
+function simUpdateImpulseDisplay() {
+  const delay = parseFloat(document.getElementById('simImpulseDelay')?.value || 0);
+  const dur   = parseInt(document.getElementById('simImpulseDuration')?.value || 1);
+  const amp   = parseFloat(document.getElementById('simImpulseAmp')?.value || 1);
+  const dEl = document.getElementById('simImpulseDelayValue');
+  const wEl = document.getElementById('simImpulseDurationValue');
+  const aEl = document.getElementById('simImpulseAmpValue');
+  if (dEl) dEl.textContent = delay.toFixed(2) + ' s';
+  if (wEl) wEl.textContent = dur + ' smp';
+  if (aEl) aEl.textContent = amp.toFixed(2);
+  // Reconnect source if running.
+  if (simRunning && typeof simConnectSource === 'function') simConnectSource();
+}
+
+// Keyboard shortcut handler (Ctrl+P) — fxcore-sim.js calls this by name.
+function simShortcutTogglePlay() {
+  studioTogglePlay();
+}
+
+// Initialise on DOM ready.
+// ============================================================
+//  Debugger glue
+//  Connects the sim debugger API (fxcore-sim.js) to the two
+//  overlay panels (source and registers).
+// ============================================================
+
+// State
+let dbgPaused     = false;
+let dbgCurrentPc  = -1;
+let dbgPcLineMap  = new Map();  // PC → line index in dbg-source-body
+let dbgLastCreg   = null;
+let dbgLastMreg   = null;
+let dbgLastAcc64Hi = 0;
+let dbgLastAcc64Lo = 0;
+let dbgBreakActive = false;
+let dbgLastRegUpdate = 0;
+const DBG_REG_UPDATE_MS = 100;  // minimum ms between register redraws
+
+// Persistent set of MREG indices to display — once a register is shown
+// (because it is named, referenced in source, or seen non-zero) it stays
+// visible even if its value later returns to zero. Reset on each new build.
+let dbgSeenMregs = new Set();
+let dbgShowAllMreg = false;   // toggled by the "All 128" button
+let dbgMregNames  = new Array(128).fill(null);
+
+// Called after a successful Build & Run to reset the register display
+// state for the new program (different program may use different MREGs).
+function dbgResetRegState() {
+  dbgSeenMregs = new Set();
+  dbgMregNames = new Array(128).fill(null);
+  dbgLastCreg = null;
+  dbgLastMreg = null;
+  dbgLastAcc64Hi = 0;
+  dbgLastAcc64Lo = 0;
+
+  // Seed from the symbol table: any named .MREG declaration.
+  // SymbolTable stores entries in `thetable`, with type 'MREG_DIRECTIVE'
+  // and the register number in `regnum`.
+  const tbl = (typeof FXCoreAssembler !== 'undefined') ? FXCoreAssembler.lastTable : null;
+  if (tbl && tbl.thetable) {
+    for (const sym of tbl.thetable) {
+      if (sym.type === 'MREG_DIRECTIVE' && sym.regnum >= 0 && sym.regnum < 128) {
+        dbgSeenMregs.add(sym.regnum);
+        if (!dbgMregNames[sym.regnum]) dbgMregNames[sym.regnum] = sym.name;
+      }
+    }
+  }
+
+  // Seed from the .fxo source: any MRnn reference used as an operand,
+  // even if it was never given a .MREG preset/name.
+  const src = window.simFxoSource || '';
+  const re = /\bMR(\d{1,3})\b/gi;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const idx = parseInt(m[1]);
+    if (idx >= 0 && idx < 128) dbgSeenMregs.add(idx);
+  }
+}
+
+function dbgToggleShowAll() {
+  dbgShowAllMreg = !dbgShowAllMreg;
+  const btn = document.getElementById('dbgRegAllBtn');
+  if (btn) btn.classList.toggle('active', dbgShowAllMreg);
+  dbgRenderRegs();
+}
+
+// ---- Source panel ----
+
+// Build the source panel from the expanded .fxo text and the assembled
+// program's PC→linenum map from FXCoreAssembler.lastAsm.
+function dbgBuildSourcePanel() {
+  const body = document.getElementById('dbg-source-body');
+  if (!body) { console.error('dbgBuildSourcePanel: no #dbg-source-body element'); return; }
+  body.innerHTML = '';
+  dbgPcLineMap.clear();
+
+  const src = window.simFxoSource || '';
+  console.log('dbgBuildSourcePanel: src length =', src.length,
+              '| first 80 chars:', JSON.stringify(src.slice(0,80)));
+
+  if (!src) { body.textContent = 'No source — run Build & Run first.'; return; }
+
+  const srcLines = src.split(/\r?\n/);
+  console.log('dbgBuildSourcePanel: srcLines.length =', srcLines.length);
+
+  const asm = (typeof FXCoreAssembler !== 'undefined') ? FXCoreAssembler.lastAsm : null;
+  console.log('dbgBuildSourcePanel: FXCoreAssembler.lastAsm =', asm,
+              '| program length =', asm && asm.program ? asm.program.length : 'N/A');
+
+  // Build PC → fxo line number map from lastAsm.program.
+  const pcToFxoLine = new Map();
+  if (asm && asm.program) {
+    for (const inst of asm.program) {
+      if (!pcToFxoLine.has(inst.pc)) pcToFxoLine.set(inst.pc, inst.linenum - 1);
+    }
+  }
+  console.log('dbgBuildSourcePanel: pcToFxoLine size =', pcToFxoLine.size,
+              '| first entry:', pcToFxoLine.size > 0
+                ? JSON.stringify([...pcToFxoLine.entries()][0]) : 'none');
+
+  // Invert to fxo line → PC
+  const fxoLineToPc = new Map();
+  for (const [pc, ln] of pcToFxoLine) {
+    if (!fxoLineToPc.has(ln)) fxoLineToPc.set(ln, pc);
+  }
+
+  srcLines.forEach((line, i) => {
+    const row = document.createElement('div');
+    row.className = 'dbg-src-line';
+    row.dataset.line = i;
+
+    const bp = document.createElement('span');
+    bp.className = 'dbg-src-bp';
+    const pc = fxoLineToPc.get(i);
+    if (pc !== undefined) {
+      bp.textContent = '·';
+      bp.onclick = () => dbgBreakAtLine(i, pc);
+      dbgPcLineMap.set(pc, i);
+    }
+
+    const pcEl = document.createElement('span');
+    pcEl.className = 'dbg-src-pc';
+    if (pc !== undefined) pcEl.textContent = pc.toString().padStart(4, '0');
+
+    const text = document.createElement('span');
+    text.className = 'dbg-src-text';
+    text.textContent = line;
+
+    row.appendChild(bp);
+    row.appendChild(pcEl);
+    row.appendChild(text);
+    body.appendChild(row);
+  });
+
+  console.log('dbgBuildSourcePanel: built', body.children.length, 'rows');
+}
+
+// Highlight the source line corresponding to the current PC.
+function dbgHighlightPc(pc) {
+  const body = document.getElementById('dbg-source-body');
+  if (!body) return;
+  // Clear previous highlight
+  body.querySelectorAll('.dbg-current').forEach(el => el.classList.remove('dbg-current'));
+  const lineIdx = dbgPcLineMap.get(pc);
+  if (lineIdx === undefined) return;
+  const rows = body.children;
+  if (lineIdx < rows.length) {
+    const row = rows[lineIdx];
+    row.classList.add('dbg-current');
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  const disp = document.getElementById('dbg-pc-display');
+  if (disp) disp.textContent = 'PC ' + String(pc).padStart(4, '0');
+}
+
+function dbgCloseSource() {
+  document.getElementById('dbg-source-panel').classList.add('hidden');
+}
+function dbgCloseRegs() {
+  document.getElementById('dbg-reg-panel').classList.add('hidden');
+}
+
+// Set breakpoint from clicking a source line dot.
+function dbgBreakAtLine(lineIdx, pc) {
+  // For a line-click breakpoint, we highlight the intent in the UI
+  // but the actual breakpoint uses the register condition row.
+  // Just scroll to confirm and focus the break row.
+  document.getElementById('dbg-break-row').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ---- Register panel ----
+
+// Render current register values into the grid.
+function dbgRenderRegs(creg, mreg, acc64hi, acc64lo) {
+  if (creg) dbgLastCreg = creg;
+  if (mreg) dbgLastMreg = mreg;
+  if (acc64hi !== undefined) dbgLastAcc64Hi = acc64hi;
+  if (acc64lo !== undefined) dbgLastAcc64Lo = acc64lo;
+  if (!dbgLastCreg) return;
+
+  const now = performance.now();
+  if (now - dbgLastRegUpdate < DBG_REG_UPDATE_MS && !dbgPaused) return;
+  dbgLastRegUpdate = now;
+
+  const body = document.getElementById('dbg-reg-body');
+  if (!body) return;
+
+  const cols = parseInt(document.getElementById('dbgRegCols')?.value || '4');
+  const fmt  = document.getElementById('dbgRegFmt')?.value || 'both';
+  const prec = parseInt(document.getElementById('dbgRegPrec')?.value || '6');
+
+  function fmtVal(v, isFlags) {
+    const hex = simDbgS31ToHex(v);
+    if (isFlags) return hex;
+    if (fmt === 'hex')  return hex;
+    if (fmt === 'int')  return String(v | 0);
+    const dec = simDbgS31ToDec(v, prec);
+    if (fmt === 'dec')  return dec;
+    return hex + '\n' + dec;
+  }
+
+  const CREG_NAMES = [
+    'R0','R1','R2','R3','R4','R5','R6','R7',
+    'R8','R9','R10','R11','R12','R13','R14','R15',
+    'ACC32','FLAGS'
+  ];
+
+  // Grow the persistent "seen" set with any register currently non-zero.
+  // Registers are never removed from this set once added, so a used
+  // register that returns to zero stays visible (item requested by user).
+  if (dbgLastMreg) {
+    for (let i = 0; i < 128; i++) {
+      if (dbgLastMreg[i] !== 0) dbgSeenMregs.add(i);
+    }
+  }
+
+  // Which MREGs to display this render.
+  let mregToShow;
+  if (dbgShowAllMreg) {
+    mregToShow = Array.from({length: 128}, (_, i) => i);
+  } else {
+    mregToShow = Array.from(dbgSeenMregs).sort((a, b) => a - b);
+    // Show at least MR0..MR15 so the panel is never empty before any
+    // values have been seen.
+    if (mregToShow.length === 0) mregToShow = Array.from({length: 16}, (_, i) => i);
+  }
+
+  body.innerHTML = '';
+
+  // ---- CREGs ----
+  const cregTitle = document.createElement('div');
+  cregTitle.className = 'dbg-reg-section-title';
+  cregTitle.textContent = 'Core Registers (CREG)';
+  body.appendChild(cregTitle);
+
+  const cregGrid = document.createElement('div');
+  cregGrid.className = `dbg-reg-grid cols${cols}`;
+  body.appendChild(cregGrid);
+
+  for (let i = 0; i < 18; i++) {
+    const v = dbgLastCreg[i];
+    const isFlags = (i === 17);
+    const cell = document.createElement('div');
+    cell.className = 'dbg-reg-cell' + (isFlags ? ' flags-cell' : '');
+    const parts = fmtVal(v, isFlags).split('\n');
+    cell.innerHTML =
+      `<span class="dbg-reg-name">${CREG_NAMES[i]}</span>` +
+      parts.map((p, idx) => `<span class="${idx === 0 ? 'dbg-reg-hex' : 'dbg-reg-dec'}">${p}</span>`).join('');
+    cregGrid.appendChild(cell);
+  }
+
+  // ---- ACC64 (64-bit accumulator, hi:lo as two 32-bit halves) ----
+  // hi is signed, lo is unsigned per the emulator's internal representation.
+  const acc64Cell = document.createElement('div');
+  acc64Cell.className = 'dbg-reg-cell flags-cell';
+  const hiHex = '0x' + (dbgLastAcc64Hi >>> 0).toString(16).toUpperCase().padStart(8, '0');
+  const loHex = (dbgLastAcc64Lo >>> 0).toString(16).toUpperCase().padStart(8, '0');
+  let acc64Line2 = '';
+  if (fmt !== 'hex') {
+    // Combine to a double for a decimal S.63 approximation — precise
+    // magnitude, may lose sub-LSB precision at the extreme low end,
+    // which is fine for a debug display.
+    const total = dbgLastAcc64Hi * 4294967296 + (dbgLastAcc64Lo >>> 0);
+    const decVal = total / 9223372036854775808; // / 2^63
+    acc64Line2 = `<span class="dbg-reg-dec">${decVal.toFixed(prec)} (S.63)</span>`;
+  }
+  acc64Cell.innerHTML =
+    `<span class="dbg-reg-name">ACC64</span>` +
+    `<span class="dbg-reg-hex">${hiHex}_${loHex}</span>` + acc64Line2;
+  cregGrid.appendChild(acc64Cell);
+
+  // ---- MREGs ----
+  if (dbgLastMreg && mregToShow.length) {
+    const mregTitle = document.createElement('div');
+    mregTitle.className = 'dbg-reg-section-title';
+    mregTitle.textContent = dbgShowAllMreg
+      ? 'Memory Registers (MREG) — all 128'
+      : `Memory Registers (MREG) — ${mregToShow.length} used`;
+    body.appendChild(mregTitle);
+
+    const mregGrid = document.createElement('div');
+    mregGrid.className = `dbg-reg-grid cols${cols}`;
+    body.appendChild(mregGrid);
+
+    for (const i of mregToShow) {
+      const v = dbgLastMreg[i];
+      const name = dbgMregNames[i] || `MR${i}`;
+      const cell = document.createElement('div');
+      cell.className = 'dbg-reg-cell';
+      const parts = fmtVal(v, false).split('\n');
+      cell.innerHTML =
+        `<span class="dbg-reg-name">${name}</span>` +
+        parts.map((p, idx) => `<span class="${idx === 0 ? 'dbg-reg-hex' : 'dbg-reg-dec'}">${p}</span>`).join('');
+      mregGrid.appendChild(cell);
+    }
+  }
+
+  // Update rate display
+  const rateEl = document.getElementById('dbgUpdateRate');
+  if (rateEl) rateEl.textContent = dbgPaused ? 'Paused' : 'Live';
+}
+
+// ---- Debugger control functions ----
+
+function dbgPause() {
+  simDbgPause();
+  dbgPaused = true;
+  dbgUpdateBtns();
+  const disp = document.getElementById('dbg-pc-display');
+  if (disp) disp.textContent = 'Paused…';
+}
+
+function dbgContinue() {
+  // Send continue to worklet then restart audio via simStart().
+  if (typeof simDbgContinue === 'function') simDbgContinue();
+  // If audio was stopped, restart it.
+  if (!simRunning && typeof simStart === 'function') simStart();
+  dbgPaused = false;
+  dbgUpdateBtns();
+  const disp = document.getElementById('dbg-pc-display');
+  if (disp) disp.textContent = 'Running…';
+  // Clear source highlight while running.
+  document.getElementById('dbg-source-body')
+    ?.querySelectorAll('.dbg-current')
+    .forEach(el => el.classList.remove('dbg-current'));
+}
+
+function dbgStep() {
+  if (!dbgPaused) {
+    // Pause first so we have a defined PC to step from.
+    dbgPause();
+    // Give the worklet one message round trip then send step.
+    setTimeout(() => simDbgStep(), 60);
+  } else {
+    simDbgStep();
+  }
+}
+
+function dbgSetBreak() {
+  const bank  = document.getElementById('dbgBkBank').value;
+  const reg   = parseInt(document.getElementById('dbgBkReg').value) || 0;
+  const op    = document.getElementById('dbgBkOp').value;
+  const rawVal = parseFloat(document.getElementById('dbgBkVal').value);
+  const value = isNaN(rawVal) ? 0 : simDbgS31(rawVal);
+  simDbgSetBreak({ bank, reg, op, value });
+  dbgBreakActive = true;
+  const st = document.getElementById('dbgBkStatus');
+  if (st) st.style.display = '';
+  pipelineLog(`Breakpoint: ${bank.toUpperCase()}[${reg}] ${op} ${rawVal.toFixed(4)} (0x${(value >>> 0).toString(16).toUpperCase()})`, 'info');
+  document.getElementById('build-bar').classList.add('open');
+}
+
+function dbgClearBreak() {
+  simDbgSetBreak(null);
+  dbgBreakActive = false;
+  const st = document.getElementById('dbgBkStatus');
+  if (st) st.style.display = 'none';
+}
+
+function dbgUpdateBtns() {
+  const pauseBtn    = document.getElementById('dbg-btn-pause');
+  const continueBtn = document.getElementById('dbg-btn-continue');
+  const stepBtn     = document.getElementById('dbg-btn-step');
+  if (pauseBtn)    { pauseBtn.classList.toggle('active', !dbgPaused); pauseBtn.disabled = dbgPaused; }
+  if (continueBtn) { continueBtn.classList.toggle('active', dbgPaused); continueBtn.disabled = !dbgPaused; }
+  if (stepBtn)     { stepBtn.disabled = !dbgPaused; }
+}
+
+// ---- Wire sim callbacks ----
+
+simDbgOnState = function(d) {
+  dbgPaused = (d.state === 'paused');
+  dbgCurrentPc = d.pc;
+  if (d.creg) { dbgLastCreg = d.creg; dbgLastMreg = d.mreg || dbgLastMreg; }
+  if (dbgPaused) {
+    dbgHighlightPc(d.pc);
+    // Update transport button text to show stopped state.
+    const btn = document.getElementById('simPlayBtn');
+    if (btn) btn.textContent = 'Resume';
+  }
+  dbgRenderRegs(d.creg, d.mreg, d.acc64hi, d.acc64lo);
+  dbgUpdateBtns();
+};
+
+simDbgOnRegisters = function(creg, mreg, acc64hi, acc64lo) {
+  if (!dbgPaused) dbgRenderRegs(creg, mreg, acc64hi, acc64lo);
+};
+
+// ---- Draggable panels ----
+// Panels are position:absolute inside canvas-wrap.
+// We must subtract canvas-wrap's own bounding rect to get
+// parent-relative coordinates.
+
+function dbgMakeDraggable(panel, header) {
+  let dragging = false;
+  let startX, startY, startLeft, startTop;
+
+  header.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
+    e.preventDefault();
+    dragging = true;
+
+    // Current position relative to the positioned parent (canvas-wrap).
+    const pr = panel.offsetParent
+      ? { left: panel.offsetParent.getBoundingClientRect().left,
+          top:  panel.offsetParent.getBoundingClientRect().top }
+      : { left: 0, top: 0 };
+    startLeft = panel.getBoundingClientRect().left - pr.left;
+    startTop  = panel.getBoundingClientRect().top  - pr.top;
+    startX = e.clientX;
+    startY = e.clientY;
+
+    // Remove right/bottom positioning so left/top take over.
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.left   = startLeft + 'px';
+    panel.style.top    = startTop  + 'px';
+
+    const onMove = ev => {
+      if (!dragging) return;
+      panel.style.left = (startLeft + ev.clientX - startX) + 'px';
+      panel.style.top  = (startTop  + ev.clientY - startY) + 'px';
+    };
+    const onUp = () => {
+      dragging = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Reset debug config.
+  if (typeof DEBUG !== 'undefined' && DEBUG.reset) DEBUG.reset();
+
+  // Show WebHID support status immediately on load.
+  hwUpdateUI();
+
+  // Make panels draggable.
+  const sp = document.getElementById('dbg-source-panel');
+  const rp = document.getElementById('dbg-reg-panel');
+  if (sp) dbgMakeDraggable(sp, document.getElementById('dbg-source-header'));
+  if (rp) dbgMakeDraggable(rp, document.getElementById('dbg-reg-header'));
+
+  console.log('GooeyCore Studio ready.');
+});
+</script>
+
+</body>
+</html>
