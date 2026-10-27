@@ -35,6 +35,43 @@ let simImage = null;          // last successfully assembled sim image
 const SIM_RATE = 48000;
 let simRate = SIM_RATE;
 
+// Points per scope trace. Shared with the worklet, which is built from source.
+const SIM_SCOPE_N = 512;
+
+// What the worklet is asked to watch. `viewer` is the register window, `trace`
+// the per-line readout in the editor; either one keeps snapshots flowing.
+// Scopes are register keys -- 'c3' is R3, 'm5' is MR5, 's16' is the SFR at
+// address 16.
+const simWatch = {viewer: false, trace: false, scopes: [], window: 1};
+
+// ---- snapshots ------------------------------------------------------------
+
+// What the register viewer and the trace are shown: the three register files,
+// ACC64, the peripherals' state and the per-line trace, read from a core.
+// Defined once here and stringified into the worklet as well, so the snapshot
+// a halted core is painted from on this thread has exactly the shape of the
+// ones the running one posts. Values are the core's own S.31 integers;
+// formatting is the viewer's job.
+function fxcoreSnapshot(c) {
+    // Clip counts and the sample count are cumulative since the last reset;
+    // the page differences successive snapshots for a rate.
+    let trace = null;
+    if (c.traceOn) {
+        trace = {len: c.progLen, samples: c.sampleCount,
+            val: c.traceVal.slice(0, c.progLen),
+            dst: c.traceDst.slice(0, c.progLen),
+            ran: c.traceRan.slice(0, c.progLen),
+            jump: c.traceJump.slice(0, c.progLen),
+            clip: c.clipCount.slice(0, c.progLen)};
+    }
+    return {type: 'state', creg: Array.from(c.creg), mreg: Array.from(c.mreg),
+            sfr: Array.from(c.sfr), acc64hi: c.acc64hi, acc64lo: c.acc64lo,
+            user: c.user.slice(), lfoPhase: c.lfoPhase.slice(),
+            addrCounter: c.addrCounter, sampleCount: c.sampleCount,
+            rate: c.sampleRate, trace: trace, scopes: [], window: 1,
+            hasProgram: c.hasProgram};
+}
+
 // ---- worklet source -------------------------------------------------------
 
 function simBuildWorkletSource() {
@@ -48,17 +85,21 @@ function simBuildWorkletSource() {
         '        this.core = new FXCoreCore();',
         '        this.core.sampleRate = sampleRate;',
         '        this.pots = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5];',
-        '        this.pins = 0x7F;',
+        '        this.pins = 0x7F;',       // pull-ups: nothing pressed
         '        this.outL = 0; this.outR = 1;',
         '        this.mirror = false;',
         '        this.bypass = false;',
         '        this.peak = [0, 0, 0, 0];',
         '        this.frames = 0;',
         '        this.ready = false;',
-        '        this.dbgState = "running";',
-        '        this.dbgPc = 0;',
-        '        this.dbgBreakCond = null;',
-        '        this.dbgWatchRegs = [];',
+        '        this.watching = false;',
+        '        this.watchFrames = 0;',
+        '        this.scopes = [];',
+        '        this.scopeWindow = 1;',
+        '        this.breakpoints = [];',
+        '        this.halted = false;',
+        '        this.haltRequested = false;',
+        '        this.traceWatch = false;',
         '        this.port.onmessage = (e) => {',
         '            const d = e.data;',
         '            if (d.type === "image") {',
@@ -70,10 +111,12 @@ function simBuildWorkletSource() {
         '                });',
         '                this.core.sampleRate = sampleRate;',
         '                this.ready = this.core.setProgram(new Int32Array(d.program));',
-        '                this.dbgState = "running";',
-        '                this.dbgPc = 0;',
+        // A new program under a halt is a different machine: whatever the
+        // page was stepping no longer applies, so the halt is dropped.
+        '                if (this.halted) this.resume(null);',
         '                this.port.postMessage({type: "loaded", ok: this.ready,',
         '                    count: d.count});',
+        '                this.postState();',
         '            } else if (d.type === "pots") {',
         '                this.pots = d.values;',
         '            } else if (d.type === "pins") {',
@@ -84,128 +127,224 @@ function simBuildWorkletSource() {
         '                this.bypass = d.on;',
         '            } else if (d.type === "reset") {',
         '                this.core.reset();',
-        '                this.dbgState = "running";',
-        '                this.dbgPc = 0;',
-        '            } else if (d.type === "dbg_pause") {',
-        '                this.dbgState = "paused";',
-        '                this.dbgPc = 0;',
-        '                this.dbgPostState();',
-        '            } else if (d.type === "dbg_continue") {',
-        '                this.dbgState = "running";',
-        '            } else if (d.type === "dbg_step") {',
-        '                if (this.dbgState === "paused" && this.ready) {',
-        '                    this.dbgState = "stepping";',
-        '                }',
-        '            } else if (d.type === "dbg_set_break") {',
-        '                this.dbgBreakCond = d.cond || null;',
-        '            } else if (d.type === "dbg_set_watch") {',
-        '                this.dbgWatchRegs = d.regs || [];',
+        '                if (this.halted) this.resume(null);',
+        '                this.postState();',
+        '            } else if (d.type === "breakpoints") {',
+        '                this.setBreakpoints(d.list);',
+        '            } else if (d.type === "halt") {',
+        '                this.haltRequested = true;',
+        '                this.installHook();',
+        // A halt asked for and then thought better of before it landed.
+        '            } else if (d.type === "unhalt") {',
+        '                this.haltRequested = false;',
+        '                this.installHook();',
+        '            } else if (d.type === "resume") {',
+        '                if (this.halted) this.resume(d.state || null);',
+        '            } else if (d.type === "watch") {',
+        '                this.watching = !!d.on;',
+        '                this.watchFrames = 0;',
+        '                this.traceWatch = !!d.trace;',
+        '                this.updateTrace();',
+        '                this.setScopes(d.scopes || [], d.window || 1);',
+        '                this.postState();',
         '            }',
         '        };',
         '    }',
-        '    dbgPostState() {',
-        '        const creg = Array.from(this.core.creg);',
-        '        const mreg = Array.from(this.core.mreg);',
-        '        this.port.postMessage({',
-        '            type: "dbg_state",',
-        '            state: this.dbgState,',
-        '            pc: this.dbgPc,',
-        '            creg: creg,',
-        '            mreg: mreg,',
-        '            acc64hi: this.core.acc64hi,',
-        '            acc64lo: this.core.acc64lo',
+        // Scopes: a register's value at the end of every sample, folded into
+        // min/max bins so that 512 points cover whatever window is asked for.
+        // An audio-rate signal shows as its envelope and an LFO as its shape,
+        // the way a DAW draws a waveform overview. The bins are kept when the
+        // list is resent with the same registers, so adding a second scope
+        // does not blank the first.
+        '    setScopes(keys, window) {',
+        '        const kept = {};',
+        '        for (const sc of this.scopes) kept[sc.key] = sc;',
+        '        this.scopes = keys.map(key => kept[key] || {',
+        '            key: key,',
+        '            file: key[0] === "c" ? this.core.creg : key[0] === "m" ? this.core.mreg : this.core.sfr,',
+        '            idx: +key.slice(1),',
+        // OUT0..OUT3 are the four SFRs the bypass swap replaces, so a scope on
+        // one of them is traced from the matching input while ENABLE is off.
+        '            out: key[0] === "s" && +key.slice(1) >= 4 && +key.slice(1) <= 7,',
+        '            min: new Float32Array(SCOPE_N), max: new Float32Array(SCOPE_N),',
+        '            head: 0, binMin: Infinity, binMax: -Infinity, count: 0});',
+        '        if (window !== this.scopeWindow) {',
+        '            this.scopeWindow = window;',
+        '            for (const sc of this.scopes) { sc.min.fill(0); sc.max.fill(0); sc.count = 0; }',
+        '        }',
+        '        this.core.onSample = this.scopes.length ? () => this.sampleScopes() : null;',
+        '    }',
+        '    sampleScopes() {',
+        '        const div = Math.max(1, Math.round(this.scopeWindow * sampleRate / SCOPE_N));',
+        '        for (const sc of this.scopes) {',
+        '            const idx = this.bypass && sc.out ? sc.idx - 4 : sc.idx;',
+        '            const v = sc.file[idx] / 2147483648;',
+        '            if (v < sc.binMin) sc.binMin = v;',
+        '            if (v > sc.binMax) sc.binMax = v;',
+        '            if (++sc.count >= div) {',
+        '                sc.min[sc.head] = sc.binMin;',
+        '                sc.max[sc.head] = sc.binMax;',
+        '                sc.head = (sc.head + 1) % SCOPE_N;',
+        '                sc.binMin = Infinity; sc.binMax = -Infinity; sc.count = 0;',
+        '            }',
+        '        }',
+        '    }',
+        '    scopeSnapshot() {',
+        '        return this.scopes.map(sc => {',
+        '            const min = new Float32Array(SCOPE_N);',
+        '            const max = new Float32Array(SCOPE_N);',
+        '            for (let i = 0; i < SCOPE_N; i++) {',
+        '                const j = (sc.head + i) % SCOPE_N;',
+        '                min[i] = sc.min[j]; max[i] = sc.max[j];',
+        '            }',
+        '            return {key: sc.key, min: min, max: max};',
         '        });',
         '    }',
-        '    dbgCheckBreak(pc) {',
-        '        const bc = this.dbgBreakCond;',
-        '        if (!bc) return false;',
-        '        const v = bc.bank === "mreg" ? this.core.mreg[bc.reg] : this.core.creg[bc.reg];',
-        '        const t = bc.value | 0;',
-        '        let hit = false;',
-        '        if (bc.op === ">") hit = v > t;',
-        '        else if (bc.op === "<") hit = v < t;',
-        '        else if (bc.op === "=") hit = v === t;',
-        '        else if (bc.op === "!=") hit = v !== t;',
-        '        if (hit) { this.dbgState = "paused"; this.dbgPc = pc; this.dbgPostState(); }',
-        '        return hit;',
+        // A snapshot of the core for the register viewer. Sent only while a
+        // viewer is open, and then at a rate an eye can follow rather than at
+        // the block rate: the three register files are a couple of hundred
+        // words and the copy is cheap, but there is no point posting it
+        // faster than it is drawn.
+        '    postState() {',
+        '        if (!this.watching) return;',
+        '        const snap = fxcoreSnapshot(this.core);',
+        // The viewer's OUT rows are read as the signal at the pins, not as the
+        // register the program last wrote, so they follow the bypass swap the
+        // way the audio and the meters do: with ENABLE off each one shows the
+        // input that has replaced it. Only the copy being posted is touched --
+        // the core's own OUT registers stay as the program left them, which is
+        // what the debugger paints from once a breakpoint has stopped it.
+        '        if (this.bypass) {',
+        '            for (let k = 0; k < 4; k++) snap.sfr[4 + k] = snap.sfr[k];',
+        '        }',
+        '        snap.scopes = this.scopeSnapshot();',
+        '        snap.window = this.scopeWindow;',
+        '        this.port.postMessage(snap);',
+        '    }',
+        // ---- halting ------------------------------------------------------
+        //
+        // Breakpoints are checked from the core's instruction hook, which is
+        // installed only while there are any (or a halt has been asked for),
+        // so a simulator with none set runs the plain loop. A hit freezes the
+        // core where it stands -- partway through a sample -- and the whole
+        // state goes to the page, which steps its own copy and hands the
+        // result back on resume. While halted the worklet outputs silence.
+        '    setBreakpoints(list) {',
+        '        this.breakpoints = (list || []).map(bp => Object.assign({was: false}, bp));',
+        '        this.installHook();',
+        '    }',
+        '    installHook() {',
+        '        const want = this.breakpoints.length > 0 || this.haltRequested;',
+        '        this.core.onInstruction = want ? (cur, next) => this.check(cur, next) : null;',
+        '        this.updateTrace();',
+        '    }',
+        // A halt hands the page the pass so far, and the page paints it on the
+        // editor, so the core records the trace whenever a hook is installed
+        // as well as when the trace is switched on. Hooks and watches change
+        // between samples, never inside one, so every pass traced is a whole
+        // one.
+        '    updateTrace() {',
+        '        this.core.traceOn = this.traceWatch || this.core.onInstruction !== null;',
+        '    }',
+        '    check(cur, next) {',
+        '        const c = this.core;',
+        '        if (this.haltRequested && next >= c.progLen) {',
+        '            this.haltRequested = false;',
+        '            return this.halt({kind: "halt"}, next);',
+        '        }',
+        '        for (const bp of this.breakpoints) {',
+        '            let hit = false;',
+        '            switch (bp.kind) {',
+        '            case "line":',
+        '                if (cur !== bp.pc) break;',
+        '                hit = bp.when === "always" || (bp.when === "first" && c.sampleCount === 0) ||',
+        '                      (bp.when === "sample" && c.sampleCount === bp.sample);',
+        '                break;',
+        '            case "clip":',
+        '                hit = c.clipped && (bp.pc < 0 || cur === bp.pc);',
+        '                break;',
+        // Only a jump can be taken or not; any other line goes on to the next
+        // instruction, which would read as "not taken" on every sample.
+        '            case "jump": {',
+        '                if (cur !== bp.pc) break;',
+        '                const op = (c.prog[cur] >>> 24) & 0xFF;',
+        '                if (op < c.OP_JGEZ || op > c.OP_JMP) break;',
+        '                hit = (next !== cur + 1) === !!bp.taken;',
+        '                break;',
+        '            }',
+        '            case "reg": {',
+        // Value conditions fire on the edge -- when they become true, not
+        // while they stay true -- or a register sitting above its threshold
+        // would halt again on every instruction after a resume.
+        '                const v = (bp.space === "c" ? c.creg : bp.space === "m" ? c.mreg : c.sfr)[bp.idx];',
+        '                const t = bp.op === ">" ? v > bp.word : bp.op === "<" ? v < bp.word :',
+        '                          bp.op === ">=" ? v >= bp.word : bp.op === "<=" ? v <= bp.word :',
+        '                          bp.op === "==" ? v === bp.word : v !== bp.word;',
+        '                hit = t && !bp.was;',
+        '                bp.was = t;',
+        '                break;',
+        '            }',
+        '            }',
+        '            if (hit) return this.halt(bp, next);',
+        '        }',
+        '        return false;',
+        '    }',
+        '    halt(bp, pc) {',
+        '        this.halted = true;',
+        '        const state = this.core.exportState();',
+        '        state.haltedPc = pc;',
+        '        this.port.postMessage({type: "halted", reason: bp, pc: pc, state: state,',
+        '            snapshot: fxcoreSnapshot(this.core)});',
+        '        return true;',
+        '    }',
+        // Carry on from the halt. With a state the page has stepped the core
+        // somewhere else, and that is where this one is put; without, it is
+        // where it stopped. Either way the sample left open is finished
+        // first -- the rest of its instructions, then the end-of-sample
+        // bookkeeping -- so the next one starts from a whole pass.
+        '    resume(state) {',
+        '        if (state) this.core.importState(state);',
+        '        this.halted = false;',
+        '        this.core.finishSample();',
+        '        this.installHook();',
+        '        this.port.postMessage({type: "resumed"});',
         '    }',
         '    process(inputs, outputs) {',
         '        const output = outputs[0];',
         '        const oL = output[0];',
         '        const oR = output.length > 1 ? output[1] : null;',
-        '        if (this.dbgState === "paused") {',
+        '        if (!this.ready || this.halted) {',
         '            oL.fill(0); if (oR) oR.fill(0);',
         '            return true;',
         '        }',
-        '        if (this.dbgState === "stepping") {',
-        '            oL.fill(0); if (oR) oR.fill(0);',
-        '            if (this.ready) {',
-        '                const core = this.core;',
-        '                core.setPots(this.pots); core.setPins(this.pins);',
-        '                core.addrCounter = (core.addrCounter - 1) & core.DELAY_MASK;',
-        '                core.updatePots(); core.updateLFOs();',
-        '                core.updateSwitches(); core.updateTapTempo();',
-        '                core.sfr[core.SFR_NOISE] = core.nextNoise();',
-        '                core.sfr[core.SFR_SAMPLECNT] = core.sampleCount | 0;',
-        '                core.creg[core.FLAGS] = (core.overflowBits | core.tapFlags) & 0xFFFF;',
-        '                this.dbgPc = core.step(this.dbgPc);',
-        '                if (this.dbgPc >= core.progLen) {',
-        '                    core.updateOverflow();',
-        '                    core.userAccum[0] += core.user[0];',
-        '                    core.userAccum[1] += core.user[1];',
-        '                    core.userAccumN++;',
-        '                    core.sampleCount = (core.sampleCount + 1) >>> 0;',
-        '                    this.dbgPc = 0;',
-        '                }',
-        '                this.dbgState = "paused";',
-        '                this.dbgPostState();',
-        '            }',
-        '            return true;',
-        '        }',
-        '        if (!this.ready) { oL.fill(0); if (oR) oR.fill(0); return true; }',
         '        const input = inputs[0];',
         '        const hasIn = input && input.length > 0 && input[0].length > 0;',
         '        const iL = hasIn ? input[0] : null;',
         '        const iR = hasIn && input.length > 1 ? input[1] : iL;',
         '        const core = this.core;',
         '        const inbuf = [0, 0, 0, 0];',
-        '        const hasBP = !!this.dbgBreakCond;',
         '        for (let i = 0; i < oL.length; i++) {',
-        '            core.setPots(this.pots); core.setPins(this.pins);',
+        '            core.setPots(this.pots);',
+        '            core.setPins(this.pins);',
         '            inbuf[0] = iL ? iL[i] : 0;',
         '            inbuf[1] = iR ? iR[i] : 0;',
         '            inbuf[2] = this.mirror ? inbuf[0] : 0;',
         '            inbuf[3] = this.mirror ? inbuf[1] : 0;',
-        '            if (hasBP) {',
-        '                core.addrCounter = (core.addrCounter - 1) & core.DELAY_MASK;',
-        '                for (let k = 0; k < 4; k++) {',
-        '                    const v = inbuf[k] || 0;',
-        '                    core.inputs[k] = core.sat32(Math.round(v * 2147483648));',
-        '                    core.sfr[core.SFR_IN0 + k] = core.inputs[k];',
-        '                }',
-        '                core.updatePots(); core.updateLFOs();',
-        '                core.updateSwitches(); core.updateTapTempo();',
-        '                core.sfr[core.SFR_NOISE] = core.nextNoise();',
-        '                core.sfr[core.SFR_SAMPLECNT] = core.sampleCount | 0;',
-        '                core.creg[core.FLAGS] = (core.overflowBits | core.tapFlags) & 0xFFFF;',
-        '                let pc = 0; let guard = 0;',
-        '                while (pc < core.progLen && guard++ <= core.PROG_MAX) {',
-        '                    const nextPc = core.step(pc);',
-        '                    if (this.dbgCheckBreak(pc)) {',
-        '                        this.dbgPc = pc;',
-        '                        for (let j = i; j < oL.length; j++) { oL[j] = 0; if (oR) oR[j] = 0; }',
-        '                        core.updateOverflow(); core.userAccumN++;',
-        '                        core.sampleCount = (core.sampleCount + 1) >>> 0;',
-        '                        return true;',
-        '                    }',
-        '                    pc = nextPc;',
-        '                }',
-        '                core.lastPC = pc; core.updateOverflow();',
-        '                core.userAccum[0] += core.user[0]; core.userAccum[1] += core.user[1];',
-        '                core.userAccumN++; core.sampleCount = (core.sampleCount + 1) >>> 0;',
-        '            } else {',
-        '                core.run(inbuf);',
+        '            core.run(inbuf);',
+        // A breakpoint inside this frame stopped the core partway through
+        // its sample. The frames already written stand; the rest are silence.
+        '            if (this.halted) {',
+        '                oL.fill(0, i);',
+        '                if (oR) oR.fill(0, i);',
+        '                return true;',
         '            }',
+        // Bypass is a routing change downstream of the core, not a halt: the
+        // program keeps running -- delay tails, LFOs, tap tempo and the USER
+        // pins all carry on -- and each input replaces the matching output,
+        // IN0 to OUT0 and so on, the way the part routes I2S when nBypass is
+        // asserted. Taking it from core.inputs rather than from a dry feed
+        // upstream is what makes the monitor pair selector still mean
+        // something while bypassed.
         '            const o = this.bypass ? core.inputs : core.outputs;',
         '            for (let k = 0; k < 4; k++) {',
         '                const a = o[k] < 0 ? -o[k] : o[k];',
@@ -217,20 +356,23 @@ function simBuildWorkletSource() {
         '        this.frames += oL.length;',
         '        if (this.frames >= 2048) {',
         '            this.port.postMessage({type: "status",',
-        '                peak: [this.peak[0]/2147483648, this.peak[1]/2147483648,',
-        '                       this.peak[2]/2147483648, this.peak[3]/2147483648],',
+        '                peak: [this.peak[0] / 2147483648, this.peak[1] / 2147483648,',
+        '                       this.peak[2] / 2147483648, this.peak[3] / 2147483648],',
         '                userDuty: this.core.readUserDuty(),',
         '                user: this.core.user.slice(),',
         '                flags: this.core.creg[17],',
         '                taptempo: this.core.sfr[45],',
-        '                creg: Array.from(this.core.creg),',
-        '                mreg: Array.from(this.core.mreg),',
-        '                acc64hi: this.core.acc64hi,',
-        '                acc64lo: this.core.acc64lo,',
         '                unimplemented: Object.keys(this.core.unimplemented),',
         '                provisional: Object.keys(this.core.provisional)});',
         '            this.peak = [0, 0, 0, 0];',
         '            this.frames = 0;',
+        '        }',
+        '        if (this.watching) {',
+        '            this.watchFrames += oL.length;',
+        '            if (this.watchFrames >= sampleRate / 20) {',
+        '                this.watchFrames = 0;',
+        '                this.postState();',
+        '            }',
         '        }',
         '        return true;',
         '    }',
@@ -238,9 +380,9 @@ function simBuildWorkletSource() {
         'registerProcessor("fxcore-processor", FXCoreProcessor);'
     ].join('\n');
 
-    return FXCoreCore.toString() + '\n' + processor;
+    return 'const SCOPE_N = ' + SIM_SCOPE_N + ';\n' +
+        FXCoreCore.toString() + '\n' + fxcoreSnapshot.toString() + '\n' + processor;
 }
-
 
 // ---- engine ---------------------------------------------------------------
 
@@ -279,6 +421,14 @@ async function simInitEngine() {
         const d = e.data;
         if (d.type === 'status') simUpdateStatusDisplay(d);
         else if (d.type === 'loaded') simOnProgramLoaded(d);
+        else if (d.type === 'state') {
+            if (typeof simRegsOnState === 'function') simRegsOnState(d);
+            if (typeof simTraceOnState === 'function') simTraceOnState(d);
+        } else if (d.type === 'halted') {
+            if (typeof simDebugOnHalted === 'function') simDebugOnHalted(d);
+        } else if (d.type === 'resumed') {
+            if (typeof simDebugOnResumed === 'function') simDebugOnResumed();
+        }
     };
 
     const inputGain = ctx.createGain();
@@ -297,6 +447,11 @@ async function simInitEngine() {
     simSendPots();
     simSendPins();
     simSendBypass();
+    // A viewer opened before the engine existed -- or across a rate change,
+    // which rebuilds it -- has to be re-attached to the new worklet. So do the
+    // breakpoints.
+    simPushWatch();
+    if (typeof simDebugPushBreakpoints === 'function') simDebugPushBreakpoints();
 }
 
 function simTeardownEngine() {
@@ -340,6 +495,10 @@ async function simStart() {
 
 function simStop() {
     if (!simRunning) return;
+    // A suspended context renders nothing, so a halt left in place would
+    // never be answered. Let it go first; the worklet takes the resume when
+    // the context next runs.
+    if (typeof simDebugOnStop === 'function') simDebugOnStop();
     simDisconnectSource();
     if (simCtx) simCtx.suspend();
     simRunning = false;
@@ -390,6 +549,10 @@ function simLoadProgram() {
         simSetProgramState('Not loaded', '');
         return false;
     }
+    // Addresses may have moved, and lines that had no instruction may have
+    // one now.
+    if (typeof simTraceOnLoad === 'function') simTraceOnLoad(simImage.lines, simImage.program);
+    if (typeof simDebugOnLoad === 'function') simDebugOnLoad();
     if (simNode) {
         // Copy the buffers: postMessage structured-clones them, and the
         // originals must stay usable for the next load.
@@ -997,15 +1160,51 @@ function simSendPots() {
 // compare against before it decides a message changed anything.
 if (typeof window !== 'undefined') window.simGetPots = () => simPots.slice();
 
+// What the debugger needs of the simulator: whether it is playing, the build
+// the worklet holds, the pins as they stand, and a way to post to the worklet.
+if (typeof window !== 'undefined') {
+    window.simIsRunning = () => simRunning;
+    window.simGetImage = () => simImage;
+    window.simGetRate = () => (simCtx && simCtx.sampleRate) || simRate;
+}
+
+// A message to the worklet, if there is one.
+function simPost(msg) {
+    if (simNode) simNode.port.postMessage(msg);
+    return !!simNode;
+}
+
+// Change what is watched and tell the worklet. Safe with no engine: the
+// engine asks for the current set when it is built.
+function simSetWatch(patch) {
+    Object.assign(simWatch, patch);
+    simPushWatch();
+}
+
+function simPushWatch() {
+    if (!simNode) return;
+    simNode.port.postMessage({
+        type: 'watch',
+        on: simWatch.viewer || simWatch.trace,
+        trace: simWatch.trace,
+        scopes: simWatch.viewer ? simWatch.scopes.slice() : [],
+        window: simWatch.window
+    });
+}
+
 // PIN bits: 0-4 = SW0-SW4, 5 = ENABLE, 6 = TAP. The pins have pull-ups, so a
 // released switch reads 1 and a pressed one reads 0 -- the panel's buttons read
 // as "pressed", so they invert.
-function simSendPins() {
+function simPinMask() {
     let mask = 0x7F;
     for (let i = 0; i < 5; i++) if (simSwOn('simSw' + i)) mask &= ~(1 << i);
     if (!simSwOn('simEnable')) mask &= ~(1 << 5);   // ENABLE lit = enabled = high
     if (simSwOn('simTap')) mask &= ~(1 << 6);
-    if (simNode) simNode.port.postMessage({type: 'pins', mask: mask});
+    return mask;
+}
+
+function simSendPins() {
+    if (simNode) simNode.port.postMessage({type: 'pins', mask: simPinMask()});
 }
 
 function simSendRoute() {
@@ -1233,35 +1432,97 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     }, 250);
 });
 
-// ---- debugger API ---------------------------------------------------------
+// ---- debugger API (GooeyCore Studio) ---------------------------------------
 //
-// These functions are called from the studio UI (gooeycore_studio.html) to
-// control single-step execution, breakpoints, and register display.
-// They are backwards compatible: the other engineer's site simply never calls
-// them, so they do nothing there.
+// These functions are called from the studio UI (index.html) to pause, step
+// and continue the simulator, set a register breakpoint, and show the
+// registers. They sit on the halt/resume protocol above: a halt moves the
+// core's whole state to this thread, where a second FXCoreCore is stepped one
+// instruction at a time, and continue hands the state back to the worklet.
+//
+// The studio calls these hooks by these names; the worklet calls the
+// simDebugOn* ones, which the assembler site defines in fxcore-debug.js and
+// this page does not load.
 
-// Send a pause message to the worklet — audio stops, state is preserved.
+let simDbgCore = null;        // the halted core, on this thread
+let simDbgPc = -1;            // next instruction; progLen or more is the end of the pass
+let simDbgStepped = false;    // has this thread's copy moved past the worklet's
+let simDbgInputs = [0, 0, 0, 0];  // input held while stepping, as floats
+let simDbgBreak = null;       // the one register breakpoint, in the worklet's shape
+
+// Set to functions in index.html.
+let simDbgOnState = null;      // ({state, pc, creg, mreg, acc64hi, acc64lo})
+let simDbgOnRegisters = null;  // (creg, mreg, acc64hi, acc64lo) while running
+
+// Tell the studio where the debugger stands.
+function simDbgPostState(state) {
+    if (typeof simDbgOnState !== 'function') return;
+    const c = simDbgCore;
+    simDbgOnState({
+        state: state,
+        pc: c ? simDbgPc : 0,
+        creg: c ? Array.from(c.creg) : null,
+        mreg: c ? Array.from(c.mreg) : null,
+        acc64hi: c ? c.acc64hi : 0,
+        acc64lo: c ? c.acc64lo : 0
+    });
+}
+
+// Stop at the end of the sample now running. Asked before Play, the halt
+// lands on the first sample once it starts.
 function simDbgPause() {
-    if (simNode) simNode.port.postMessage({ type: 'dbg_pause' });
+    if (simDbgCore) return;
+    simPost({type: 'halt'});
 }
 
-// Resume normal execution from wherever the worklet paused.
+// Hand the core back to the worklet and let it run.
 function simDbgContinue() {
-    if (simNode) simNode.port.postMessage({ type: 'dbg_continue' });
-    simRunning = true;
-    simUpdateTransport();
+    if (!simDbgCore) {
+        simPost({type: 'unhalt'});
+        return;
+    }
+    let state = null;
+    if (simDbgStepped) {
+        state = simDbgCore.exportState();
+        state.haltedPc = simDbgPc;
+    }
+    simPost({type: 'resume', state: state});
 }
 
-// Execute exactly one instruction then return to paused.
+// One instruction. At the end of a pass the step is the bookkeeping and the
+// start of the next sample, so the next press lands on the first line again.
 function simDbgStep() {
-    if (simNode) simNode.port.postMessage({ type: 'dbg_step' });
+    const c = simDbgCore;
+    if (!c) return;
+    if (simDbgPc >= c.progLen) {
+        c.endSample();
+        c.setPots(simGetPots());
+        c.setPins(simPinMask());
+        c.beginSample(simDbgInputs);
+        simDbgPc = 0;
+    } else {
+        c.onInstruction = () => true;
+        simDbgPc = c.execute(simDbgPc);
+        c.onInstruction = null;
+    }
+    simDbgStepped = true;
+    simDbgPostState('paused');
 }
 
-// Set or clear a breakpoint condition.
+// Set or clear the breakpoint condition.
 // cond: null to clear, or { bank:'creg'|'mreg', reg:number, op:'>'|'<'|'='|'!=', value:number }
 // value is a raw S.31 integer (use simDbgS31(decimal) to convert from -1..+1).
+// It fires when the condition becomes true, not on every instruction while it
+// stays true, so Continue gets past it.
 function simDbgSetBreak(cond) {
-    if (simNode) simNode.port.postMessage({ type: 'dbg_set_break', cond: cond || null });
+    simDbgBreak = cond ? {
+        kind: 'reg',
+        space: cond.bank === 'mreg' ? 'm' : 'c',
+        idx: cond.reg | 0,
+        op: cond.op === '=' ? '==' : cond.op,
+        word: cond.value | 0
+    } : null;
+    simDebugPushBreakpoints();
 }
 
 // Convert a decimal S.31 value (-1.0 to ~+1.0) to the raw integer the worklet uses.
@@ -1281,49 +1542,70 @@ function simDbgS31ToHex(v) {
     return '0x' + (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
 }
 
-// Called by the main thread onmessage handler when the worklet posts a
-// dbg_state message. Override this in the studio page to receive state.
-// Default implementation does nothing so the other engineer's site is unaffected.
-let simDbgOnState = null;   // set to a function in gooeycore_studio.html
+// ---- hooks the simulator calls ----
 
-// ---- existing message handler extension -----------------------------------
-
-// The node.port.onmessage handler in simInitEngine only handles 'status' and
-// 'loaded'. We extend it here non-destructively so dbg_state messages reach
-// simDbgOnState without changing any existing code path.
-const _simOrigInitEngine = simInitEngine;
-simInitEngine = async function() {
-    await _simOrigInitEngine.apply(this, arguments);
-    // Wrap the message handler to also dispatch dbg_state.
-    if (simNode) {
-        const origHandler = simNode.port.onmessage;
-        simNode.port.onmessage = (e) => {
-            if (e.data && e.data.type === 'dbg_state') {
-                if (typeof simDbgOnState === 'function') simDbgOnState(e.data);
-            } else {
-                if (origHandler) origHandler(e);
-            }
-        };
+// The worklet stopped, at a breakpoint or a pause: take the core over.
+function simDebugOnHalted(msg) {
+    const image = simGetImage();
+    if (!image) return;
+    const c = new FXCoreCore();
+    c.setPresets({creg: image.creg, mreg: image.mreg, sfr: image.sfr,
+                  usr: image.usr, cfg: image.cfg});
+    c.sampleRate = simGetRate();
+    c.setProgram(image.program);
+    c.importState(msg.state);
+    simDbgCore = c;
+    simDbgPc = msg.pc;
+    simDbgStepped = false;
+    simDbgInputs = Array.from(c.inputs, v => v / 2147483648);
+    // A pause lands at the end of a pass; open the next one so the panel
+    // shows the first instruction ready to run, as it always has.
+    if (msg.reason && msg.reason.kind === 'halt') {
+        simDbgStep();
+        return;
     }
-};
+    simDbgPostState('paused');
+}
 
-// The status message now includes creg and mreg arrays.
-// Extend simUpdateStatusDisplay to pass them on if a handler is registered.
-// We use a variable assignment (not a function declaration) to avoid
-// hoisting conflicts with the existing function declaration above.
-let simDbgOnRegisters = null;  // set to a function in gooeycore_studio.html
+function simDebugOnResumed() {
+    simDbgCore = null;
+    simDbgPc = -1;
+    simUpdateTransport();
+    simDbgPostState('running');
+}
 
-const _simOrigUpdateStatusDisplay = simUpdateStatusDisplay;
-simUpdateStatusDisplay = function(d) {
-    _simOrigUpdateStatusDisplay(d);
+// Stop was pressed while halted. The context is about to be suspended and
+// will not answer, so the halt is let go of here and now; the resume itself
+// is delivered when the context next runs.
+function simDebugOnStop() {
+    if (!simDbgCore) return;
+    simDbgContinue();
+    simDebugOnResumed();
+}
+
+// The engine was rebuilt or a new build loaded: the worklet needs the
+// breakpoint again.
+function simDebugPushBreakpoints() {
+    simPost({type: 'breakpoints', list: simDbgBreak ? [simDbgBreak] : []});
+}
+
+function simDebugOnLoad() {
+    simDebugPushBreakpoints();
+}
+
+// Register snapshots from the running worklet, for the register panel. The
+// watch keeps them coming about 20 times a second.
+function simRegsOnState(d) {
     if (typeof simDbgOnRegisters === 'function' && d.creg) {
         simDbgOnRegisters(d.creg, d.mreg, d.acc64hi, d.acc64lo);
     }
-};
+}
+simWatch.viewer = true;
 
 // The control-name parser reads from the .fxo source text when editor is
 // not present. Studios that set window.simFxoSource get names from that.
-const _simOrigRefreshControlNames = simRefreshControlNames;
+// The control-name attach loop in DOMContentLoaded calls this by name, so it
+// picks up window.simFxoSource too.
 simRefreshControlNames = function() {
     let src = '';
     try {
@@ -1340,10 +1622,6 @@ simRefreshControlNames = function() {
     simSetControlLabel('simTap', names.tap, 'TAP');
 };
 
-// The control-name attach loop in DOMContentLoaded also polls for editor.
-// Since we replaced simRefreshControlNames above, that loop now also picks
-// up window.simFxoSource automatically — no further change needed.
-
 // ---- end debugger API -----------------------------------------------------
 
 // The control-name parser and the latch/push algebra are pure, so they are
@@ -1352,5 +1630,6 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = { simParseControlNames, simSwOn, simLatched, simPushed,
         simSetSwitch, simSetEnable, simSwToggle, simSwPress, simSwRelease,
         simFillClick, simClickLength, SIM_CLICK_PERIOD,
-        simPluckSignal, SIM_PLUCK_SECONDS, SIM_PLUCK_DECAY };
+        simPluckSignal, SIM_PLUCK_SECONDS, SIM_PLUCK_DECAY,
+        simBuildWorkletSource, fxcoreSnapshot };
 }

@@ -591,7 +591,7 @@ class Assembler {
                     const symbol = this.thetable.symbolVal(paramValue);
                     if (symbol) {
                         instruction.resolved[i] = true;
-                        instruction.paramvals[i] = Math.floor(symbol.rvalue);
+                        instruction.paramvals[i] = Math.trunc(symbol.rvalue);
                         debug.parameters(`  Resolved symbol to: ${instruction.paramvals[i]}`, 'ASSEMBLER');
                     } else {
                         debug.error(`  ERROR: Symbol "${paramValue}" not found!`, 'ASSEMBLER');
@@ -1052,7 +1052,7 @@ class Assembler {
                     debug.error(`Parameter ${paramName} out of range for imm1 at line ${instruction.linenum}`, 'ASSEMBLER');
                     return false;
                 }
-                instruction.paramint[paramIndex] = Math.floor(value) & 0x1;
+                instruction.paramint[paramIndex] = Math.trunc(value) & 0x1;
                 break;
                 
             case 'imm4':
@@ -1060,7 +1060,7 @@ class Assembler {
                     debug.error(`Parameter ${paramName} out of range for imm4 at line ${instruction.linenum}`, 'ASSEMBLER');
                     return false;
                 }
-                instruction.paramint[paramIndex] = Math.floor(value) & 0xF;
+                instruction.paramint[paramIndex] = Math.trunc(value) & 0xF;
                 break;
                 
             case 'imm5':
@@ -1068,7 +1068,7 @@ class Assembler {
                     debug.error(`Parameter ${paramName} out of range for imm5 at line ${instruction.linenum}`, 'ASSEMBLER');
                     return false;
                 }
-                instruction.paramint[paramIndex] = Math.floor(value) & 0x1F;
+                instruction.paramint[paramIndex] = Math.trunc(value) & 0x1F;
                 break;
                 
             case 'imm6':
@@ -1076,20 +1076,25 @@ class Assembler {
                     debug.error(`Parameter ${paramName} out of range for imm6 at line ${instruction.linenum}`, 'ASSEMBLER');
                     return false;
                 }
-                instruction.paramint[paramIndex] = Math.floor(value) & 0x3F;
+                instruction.paramint[paramIndex] = Math.trunc(value) & 0x3F;
                 break;
                 
+            // Integer fields take "only the integer portion of the value" (FXCore
+            // Instruction Set document), i.e. truncate toward zero as the CLI's C#
+            // casts do. This port used Math.floor, which only differs for a negative
+            // fraction: "addi alias_wave, -0.5" assembled as 0xFFFF (-1) where the
+            // CLI, and every shipped program built with it, has 0x0000.
             case 'imm16':
                 if (paramName.toUpperCase().endsWith('.L')) {
-                    instruction.paramint[paramIndex] = Math.floor(value) & 0xFFFF;
+                    instruction.paramint[paramIndex] = Math.trunc(value) & 0xFFFF;
                 } else if (paramName.toUpperCase().endsWith('.U')) {
-                    instruction.paramint[paramIndex] = Math.floor(value) & 0xFFFF;
+                    instruction.paramint[paramIndex] = Math.trunc(value) & 0xFFFF;
                 } else {
                     if (value < -32768 || value > 65535) {
                         debug.error(`Parameter ${paramName} out of range for imm16 at line ${instruction.linenum}`, 'ASSEMBLER');
                         return false;
                     }
-                    instruction.paramint[paramIndex] = Math.floor(value) & 0xFFFF;
+                    instruction.paramint[paramIndex] = Math.trunc(value) & 0xFFFF;
                 }
                 break;
                 
@@ -1124,17 +1129,27 @@ class Assembler {
                     return false;
                 }
 
-                // A fraction: value = word / 2^n. Round at the field's own
-                // width rather than truncating a wider intermediate -- scaling
-                // by 0x7FFFFFFF and flooring cost a whole LSB on every positive
-                // value, so 0.5 assembled as 16383 rather than 16384 and every
-                // coefficient in a program came out a step small.
+                // A fraction: value = word / 2^n.
+                //
+                // THE CLI IS THE GOLDEN STANDARD. Encode exactly as the FXCore CLI
+                // assembler (2.x) does: scale to 32 bits by 0x7FFFFFFF, truncate
+                // like a C# cast, then take the field's top bits. This is one LSB
+                // low on most positive values (0.5 -> 0x3FFF, 0.01 -> 0x0147), but
+                // it is what every shipped program was built with, so a source
+                // reassembles byte-identical to the CLI and to the products.
+                //
+                // NOTE: the more accurate encoding is to round at the field's own
+                // width (0.5 -> 0x4000), which this port used in builds 18-23
+                // (commit 7b01911):
+                //     Math.max(bottom, Math.min(top, Math.round(value * (top + 1)))) & mask
+                // We may want to move to that if / when the CLI app is ever updated
+                // to round. Until then, match the CLI. See cliFraction() in common.js.
                 if (value < -1.0 || value >= 1.0) {
                     debug.error(`Parameter ${paramName} out of range for ${paramType} at line ${instruction.linenum}, a fixed point immediate runs from -1.0 to just under 1.0`, 'ASSEMBLER');
                     return false;
                 }
                 instruction.paramint[paramIndex] =
-                    Math.max(bottom, Math.min(top, Math.round(value * (top + 1)))) & mask;
+                    (common.cliFraction(value) >> (paramType === 'imm8d' ? 24 : 16)) & mask;
                 break;
             }
                 
@@ -1147,7 +1162,7 @@ class Assembler {
                     debug.error(`Jump past end of program at line ${instruction.linenum}`, 'ASSEMBLER');
                     return false;
                 }
-                instruction.paramint[paramIndex] = Math.floor(value) & 0x3FF;
+                instruction.paramint[paramIndex] = Math.trunc(value) & 0x3FF;
                 break;
                 
             case 'addr':
@@ -1155,12 +1170,12 @@ class Assembler {
                     debug.error(`Memory address out of range at line ${instruction.linenum}`, 'ASSEMBLER');
                     return false;
                 }
-                instruction.paramint[paramIndex] = Math.floor(value) & 0x7FFF;
+                instruction.paramint[paramIndex] = Math.trunc(value) & 0x7FFF;
                 break;
                 
             default:
                 // Register types
-                instruction.paramint[paramIndex] = Math.floor(value);
+                instruction.paramint[paramIndex] = Math.trunc(value);
                 break;
         }
         
