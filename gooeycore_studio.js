@@ -1856,12 +1856,11 @@ function generateListing(asm, baseName) {
   const equs = table && table.thetable
     ? table.thetable.filter(s => s.type === 'EQU_DIRECTIVE' && s.resolved) : [];
   lines.push('; Equate table');
-  lines.push(`; ${'Name'.padEnd(24)} ${'Value'.padEnd(22)} ${'Hex'.padEnd(10)} Expression`);
+  lines.push(`; ${'Name'.padEnd(24)} ${'Value'.padEnd(22)} Expression`);
   for (const sym of equs) {
     const v = sym.rvalue;
-    const hex = Number.isInteger(v) ? '0x' + (v >>> 0).toString(16).toUpperCase() : '';
     const expr = String(sym.value).trim();
-    lines.push(`; ${sym.name.padEnd(24)} ${String(v).padEnd(22)} ${hex.padEnd(10)} ${expr === String(v) ? '' : expr}`.trimEnd());
+    lines.push(`; ${sym.name.padEnd(24)} ${String(v).padEnd(22)} ${expr === String(v) ? '' : expr}`.trimEnd());
   }
   lines.push('');
   lines.push('; Label table');
